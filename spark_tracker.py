@@ -2,21 +2,36 @@ import streamlit as st
 import pandas as pd
 import re
 from datetime import datetime
-import os
 from io import BytesIO
 import easyocr
-from dotenv import load_dotenv
+import gspread
+from google.oauth2 import service_account
 
 # === Config ===
-DATA_FILE = "spark_orders.csv"
 TARGET_DAILY = 200
 CAR_COST_MONTHLY = 620 + 120
+GOOGLE_SHEET_NAME = "spark_orders"
 
-# === Auth ===
-load_dotenv()
-USERNAME = os.getenv("SPARK_USER", "wife")
-PASSWORD = os.getenv("SPARK_PASS")
+# === Auth (from .streamlit/secrets.toml) ===
+USERNAME = st.secrets["SPARK_USER"]
+PASSWORD = st.secrets["SPARK_PASS"]
 
+# Google Sheets Auth
+try:
+    creds = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    gc = gspread.authorize(creds)
+    worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
+    use_google_sheets = True
+except Exception as e:
+    st.warning("⚠️ Google Sheets not connected, using local CSV fallback.")
+    use_google_sheets = False
+
+DATA_FILE = "spark_orders.csv"
+
+# === Login ===
 def login():
     st.title("🔐 Spark Tracker Login")
     with st.form("login"):
@@ -33,11 +48,17 @@ if "logged_in" not in st.session_state:
     login()
     st.stop()
 
-# === Data Load ===
-if os.path.exists(DATA_FILE):
-    df = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+# === Load Data ===
+if use_google_sheets:
+    records = worksheet.get_all_records()
+    df = pd.DataFrame(records)
+    if not df.empty:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
 else:
-    df = pd.DataFrame(columns=["timestamp", "order_total", "miles"])
+    if os.path.exists(DATA_FILE):
+        df = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+    else:
+        df = pd.DataFrame(columns=["timestamp", "order_total", "miles"])
 
 # === App Title ===
 st.title("🚗 Spark Delivery Tracker")
@@ -94,18 +115,11 @@ if uploaded_image:
     with st.spinner("Reading screenshot..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
         extracted_text = extract_text(image_bytes)
-        total_auto, miles_auto, phone_time = parse_order_details(extracted_text)
+        total_auto, miles_auto, _ = parse_order_details(extracted_text)
 
     st.write("🧾 **Extracted Info**")
-    if total_auto:
-        st.write(f"**Order Total:** ${total_auto:.2f}")
-    else:
-        st.write("❌ Couldn't detect order total.")
-
-    if miles_auto:
-        st.write(f"**Miles:** {miles_auto:.2f} mi")
-    else:
-        st.write("❌ Couldn't detect miles.")
+    st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
+    st.write(f"**Miles:** {miles_auto if miles_auto else '❌ Not found'}")
 
 # === Manual Entry Form (Auto-filled if image uploaded) ===
 with st.form("entry_form"):
@@ -116,17 +130,18 @@ with st.form("entry_form"):
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto)
     submitted = st.form_submit_button("Add Entry")
     if submitted:
-        new_row = {
-            "timestamp": datetime.now(),
-            "order_total": order_total,
-            "miles": miles
-        }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(DATA_FILE, index=False)
+        now = datetime.now().isoformat()
+        new_row = {"timestamp": now, "order_total": order_total, "miles": miles}
+        if use_google_sheets:
+            worksheet.append_row([now, order_total, miles])
+        else:
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            df.to_csv(DATA_FILE, index=False)
         st.success("✅ Entry saved!")
 
 # === Metrics + Charts ===
 if len(df) > 0:
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
     daily_totals = df.groupby("date")["order_total"].sum()
