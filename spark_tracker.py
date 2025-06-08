@@ -5,19 +5,21 @@ from datetime import datetime
 from io import BytesIO
 import easyocr
 import gspread
-from google.oauth2.service_account import Credentials  # ✅ FIXED import
+from google.oauth2.service_account import Credentials
 import os
 
 # === Config ===
 TARGET_DAILY = 200
 CAR_COST_MONTHLY = 620 + 120
 GOOGLE_SHEET_NAME = "spark_orders"
+DATA_FILE = "spark_orders.csv"
+HEADERS = ["timestamp", "order_total", "miles", "earnings_per_mile", "hour"]
 
-# === Auth (from .streamlit/secrets.toml) ===
+# === Auth ===
 USERNAME = st.secrets["SPARK_USER"]
 PASSWORD = st.secrets["SPARK_PASS"]
 
-# === Google Sheets Auth (with proper scopes) ===
+# === Google Sheets Auth ===
 try:
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
@@ -25,17 +27,19 @@ try:
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-
     )
     gc = gspread.authorize(creds)
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
+
+    # ✅ Ensure headers are present
+    if not worksheet.row_values(1):
+        worksheet.insert_row(HEADERS, index=1)
+
     use_google_sheets = True
 except Exception as e:
     st.error(f"Google Sheets error: {e}")
     st.warning("⚠️ Google Sheets not connected, using local CSV fallback.")
     use_google_sheets = False
-
-DATA_FILE = "spark_orders.csv"
 
 # === Login ===
 def login():
@@ -58,13 +62,15 @@ if "logged_in" not in st.session_state:
 if use_google_sheets:
     records = worksheet.get_all_records()
     df = pd.DataFrame(records)
-    if not df.empty:
+    if not df.empty and 'timestamp' in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+    elif df.empty:
+        df = pd.DataFrame(columns=HEADERS)
 else:
     if os.path.exists(DATA_FILE):
         df = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
     else:
-        df = pd.DataFrame(columns=["timestamp", "order_total", "miles"])
+        df = pd.DataFrame(columns=HEADERS)
 
 # === App Title ===
 st.title("🚗 Spark Delivery Tracker")
@@ -136,20 +142,28 @@ with st.form("entry_form"):
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto)
     submitted = st.form_submit_button("Add Entry")
     if submitted:
-        now = datetime.now().isoformat()
-        new_row = {"timestamp": now, "order_total": order_total, "miles": miles}
+        now = datetime.now()
+        new_row = {
+            "timestamp": now.isoformat(),
+            "order_total": order_total,
+            "miles": miles,
+            "earnings_per_mile": round(order_total / miles, 2) if miles > 0 else 0,
+            "hour": now.hour
+        }
         if use_google_sheets:
-            worksheet.append_row([now, order_total, miles])
+            worksheet.append_row(list(new_row.values()))
         else:
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             df.to_csv(DATA_FILE, index=False)
         st.success("✅ Entry saved!")
 
 # === Metrics + Charts ===
-if len(df) > 0:
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+if not df.empty and "timestamp" in df.columns:
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
+    df["earnings_per_mile"] = df["order_total"] / df["miles"].replace(0, pd.NA)
+
     daily_totals = df.groupby("date")["order_total"].sum()
     hourly_rate = df.groupby("hour")["order_total"].mean()
 
