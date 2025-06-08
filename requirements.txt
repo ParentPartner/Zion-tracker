@@ -5,3 +5,4 @@ opencv-python-headless
 easyocr
 gspread
 oauth2client
+gspread-dataframe
