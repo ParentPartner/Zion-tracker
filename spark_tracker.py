@@ -6,6 +6,8 @@ from io import BytesIO
 import easyocr
 import gspread
 from google.oauth2 import service_account
+import os
+
 
 # === Config ===
 TARGET_DAILY = 200
