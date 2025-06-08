@@ -5,9 +5,8 @@ from datetime import datetime
 from io import BytesIO
 import easyocr
 import gspread
-from google.oauth2 import service_account
+from google.oauth2.service_account import Credentials  # ✅ FIXED import
 import os
-
 
 # === Config ===
 TARGET_DAILY = 200
@@ -18,9 +17,9 @@ GOOGLE_SHEET_NAME = "spark_orders"
 USERNAME = st.secrets["SPARK_USER"]
 PASSWORD = st.secrets["SPARK_PASS"]
 
-# Google Sheets Auth
+# === Google Sheets Auth (with proper scopes) ===
 try:
-    creds = service_account.Credentials.from_service_account_info(
+    creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
