@@ -191,8 +191,12 @@ if not df.empty and "timestamp" in df.columns:
     st.line_chart(hourly_rate)
 
     st.subheader("🧠 Smart Suggestion")
-    best_hour = hourly_rate.idxmax()
-    st.success(f"Try working more around **{best_hour}:00** — that's your highest earning hour!")
+    if not hourly_rate.empty:
+        best_hour = hourly_rate.idxmax()
+        st.success(f"Try working more around **{best_hour}:00** — that's your highest earning hour!")
+    else:
+        st.info("No hourly data available yet. Add some entries to get smart suggestions.")
+
 
 else:
     st.info("Add some data to get started.")
