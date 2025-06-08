@@ -26,6 +26,7 @@ try:
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
     use_google_sheets = True
 except Exception as e:
+    st.error(f"Google Sheets error: {e}")
     st.warning("⚠️ Google Sheets not connected, using local CSV fallback.")
     use_google_sheets = False
 
