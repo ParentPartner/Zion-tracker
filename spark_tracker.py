@@ -85,7 +85,7 @@ def parse_order_details(text):
     total, miles, order_time = None, None, None
     clean_text = text.replace(",", "").replace("O", "0")
     lines = clean_text.lower().split("\n")
-    total_keywords = ["earnings", "order total", "total", "payout", "you earned", "tip"]
+    total_keywords = ["earnings", "order total", "total", "payout", "you earned", "tip", "estimate"]
 
     for i, line in enumerate(lines):
         if any(keyword in line for keyword in total_keywords):
