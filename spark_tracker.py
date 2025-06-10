@@ -23,14 +23,12 @@ PASSWORD = st.secrets["SPARK_PASS"]
 try:
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     )
     gc = gspread.authorize(creds)
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
+    # Ensure headers exist
     if not worksheet.row_values(1):
         worksheet.insert_row(HEADERS, index=1)
 
@@ -47,11 +45,12 @@ def login():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
-        if submitted and username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
-            st.session_state["logged_in"] = True
-            st.rerun()
-        elif submitted:
-            st.error("Invalid login")
+        if submitted:
+            if username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
+                st.session_state["logged_in"] = True
+                st.rerun()
+            else:
+                st.error("Invalid login")
 
 if "logged_in" not in st.session_state:
     login()
@@ -59,11 +58,14 @@ if "logged_in" not in st.session_state:
 
 # === Load Data ===
 if use_google_sheets:
-    records = worksheet.get_all_records()
-    df = pd.DataFrame(records)
-    if not df.empty and 'timestamp' in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-    elif df.empty:
+    try:
+        records = worksheet.get_all_records()
+        df = pd.DataFrame(records)
+        if 'timestamp' in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        else:
+            df = pd.DataFrame(columns=HEADERS)
+    except:
         df = pd.DataFrame(columns=HEADERS)
 else:
     if os.path.exists(DATA_FILE):
@@ -74,7 +76,7 @@ else:
 # === App Title ===
 st.title("🚗 Spark Delivery Tracker")
 
-# === OCR Logic ===
+# === OCR Functions ===
 def extract_text(image_bytes):
     reader = easyocr.Reader(['en'], gpu=False)
     results = reader.readtext(image_bytes)
@@ -83,21 +85,17 @@ def extract_text(image_bytes):
 def parse_order_details(text):
     total, miles, order_time = None, None, None
 
-    # Normalize OCR quirks
     clean_text = (
         text.replace(",", "")
-        .replace("O", "0")
-        .replace("S", "$")  # <- fixes S20.60 to $20.60
-        .replace("s", "$")  # lowercase too
+            .replace("O", "0")
+            .replace("S", "$")
+            .replace("s", "$")
     )
 
     lines = clean_text.lower().split("\n")
-
-    # Match dollar values (including incorrectly formatted)
     dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
     dollar_values = [float(val) for val in dollar_values if float(val) >= 5]
 
-    # Priority 1: Find "estimate" line
     for line in lines:
         if "estimate" in line:
             match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
@@ -108,26 +106,21 @@ def parse_order_details(text):
                 except:
                     pass
 
-    # Priority 2: Use largest reasonable value
     if total is None and dollar_values:
         total = max(dollar_values)
 
-    # Get miles
     miles_match = re.search(r"(\d+(\.\d+)?)\s*(mi|miles)", clean_text)
     if miles_match:
         miles = float(miles_match.group(1))
 
-    # Get time
     time_match = re.search(r"\b(\d{1,2}:\d{2})\b", clean_text)
     if time_match:
         order_time = time_match.group(1)
 
     return total, miles, order_time
 
-
-# === Upload Image ===
+# === Image Upload + OCR ===
 st.subheader("📸 Optional: Upload Screenshot")
-
 uploaded_image = st.file_uploader("Drag & drop or browse for screenshot", type=["jpg", "jpeg", "png"])
 total_auto, miles_auto = 0.0, 0.0
 
@@ -141,37 +134,41 @@ if uploaded_image:
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
     st.write(f"**Miles:** {miles_auto if miles_auto else '❌ Not found'}")
 
-    # Optional Debug
     with st.expander("🧪 Show Raw OCR Text"):
         st.text_area("OCR Output", extracted_text, height=150)
 
-# === Entry Form ===
+# === Manual Entry Form ===
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
-        order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto)
+        order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto or 0.0)
     with col2:
-        miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto)
+        miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
 
     submitted = st.form_submit_button("Add Entry")
     if submitted:
         now = datetime.now()
+        earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
             "timestamp": now.isoformat(),
-            "order_total": order_total,
-            "miles": miles,
-            "earnings_per_mile": round(order_total / miles, 2) if miles > 0 else 0,
+            "order_total": float(order_total),
+            "miles": float(miles),
+            "earnings_per_mile": earnings_per_mile,
             "hour": now.hour
         }
-        if use_google_sheets:
-            worksheet.append_row(list(new_row.values()))
-        else:
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            df.to_csv(DATA_FILE, index=False)
-        st.success("✅ Entry saved!")
 
-# === Metrics & Charts ===
-if not df.empty and "timestamp" in df.columns:
+        try:
+            if use_google_sheets:
+                worksheet.append_row([str(new_row[k]) for k in HEADERS])
+            else:
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                df.to_csv(DATA_FILE, index=False)
+            st.success("✅ Entry saved!")
+        except Exception as e:
+            st.error(f"❌ Error saving entry: {e}")
+
+# === Metrics & Visualization ===
+if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
@@ -186,11 +183,8 @@ if not df.empty and "timestamp" in df.columns:
     days_logged = df["date"].nunique()
     avg_per_day = total_earned / days_logged if days_logged else 0
 
-    if not daily_totals.empty:
-        last_day_total = daily_totals.iloc[-1]
-        daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
-    else:
-        daily_goal_remaining = TARGET_DAILY
+    last_day_total = daily_totals.iloc[-1] if not daily_totals.empty else 0
+    daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
 
     col1, col2 = st.columns(2)
     col1.metric("Total Earned", f"${total_earned:.2f}")
