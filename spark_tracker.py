@@ -82,37 +82,48 @@ def extract_text(image_bytes):
 
 def parse_order_details(text):
     total, miles, order_time = None, None, None
-    clean_text = text.replace(",", "").replace("O", "0")
+
+    # Normalize OCR quirks
+    clean_text = (
+        text.replace(",", "")
+        .replace("O", "0")
+        .replace("S", "$")  # <- fixes S20.60 to $20.60
+        .replace("s", "$")  # lowercase too
+    )
+
     lines = clean_text.lower().split("\n")
 
+    # Match dollar values (including incorrectly formatted)
     dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
-    dollar_values = [float(val) for val in dollar_values]
+    dollar_values = [float(val) for val in dollar_values if float(val) >= 5]
 
-    # Priority 1: Find "estimate" line with dollar value
+    # Priority 1: Find "estimate" line
     for line in lines:
         if "estimate" in line:
             match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
             if match:
-                total = float(match.group(1))
-                break
+                try:
+                    total = float(match.group(1))
+                    break
+                except:
+                    pass
 
-    # Priority 2: Use largest value above $5
+    # Priority 2: Use largest reasonable value
     if total is None and dollar_values:
-        likely_totals = [val for val in dollar_values if val > 5]
-        if likely_totals:
-            total = max(likely_totals)
+        total = max(dollar_values)
 
-    # Find miles
+    # Get miles
     miles_match = re.search(r"(\d+(\.\d+)?)\s*(mi|miles)", clean_text)
     if miles_match:
         miles = float(miles_match.group(1))
 
-    # Optional: Find order time
+    # Get time
     time_match = re.search(r"\b(\d{1,2}:\d{2})\b", clean_text)
     if time_match:
         order_time = time_match.group(1)
 
     return total, miles, order_time
+
 
 # === Upload Image ===
 st.subheader("📸 Optional: Upload Screenshot")
