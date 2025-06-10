@@ -31,7 +31,6 @@ try:
     gc = gspread.authorize(creds)
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
-    # ✅ Ensure headers are present
     if not worksheet.row_values(1):
         worksheet.insert_row(HEADERS, index=1)
 
@@ -85,40 +84,38 @@ def parse_order_details(text):
     total, miles, order_time = None, None, None
     clean_text = text.replace(",", "").replace("O", "0")
     lines = clean_text.lower().split("\n")
-    total_keywords = ["earnings", "order total", "total", "payout", "you earned", "tip", "estimate"]
 
-    for i, line in enumerate(lines):
-        if any(keyword in line for keyword in total_keywords):
+    dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
+    dollar_values = [float(val) for val in dollar_values]
+
+    # Priority 1: Find "estimate" line with dollar value
+    for line in lines:
+        if "estimate" in line:
             match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
             if match:
                 total = float(match.group(1))
                 break
-        elif i + 1 < len(lines) and any(keyword in lines[i + 1] for keyword in total_keywords):
-            match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
-            if match:
-                total = float(match.group(1))
-                break
 
-    if total is None:
-        all_matches = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
-        if all_matches:
-            try:
-                total = max(float(val) for val in all_matches if float(val) >= 5)
-            except:
-                pass
+    # Priority 2: Use largest value above $5
+    if total is None and dollar_values:
+        likely_totals = [val for val in dollar_values if val > 5]
+        if likely_totals:
+            total = max(likely_totals)
 
+    # Find miles
     miles_match = re.search(r"(\d+(\.\d+)?)\s*(mi|miles)", clean_text)
     if miles_match:
         miles = float(miles_match.group(1))
 
+    # Optional: Find order time
     time_match = re.search(r"\b(\d{1,2}:\d{2})\b", clean_text)
     if time_match:
         order_time = time_match.group(1)
 
     return total, miles, order_time
 
-# === Optional OCR Upload ===
-st.subheader("📸 Optional: Upload Screenshot Instead")
+# === Upload Image ===
+st.subheader("📸 Optional: Upload Screenshot")
 
 uploaded_image = st.file_uploader("Drag & drop or browse for screenshot", type=["jpg", "jpeg", "png"])
 total_auto, miles_auto = 0.0, 0.0
@@ -133,13 +130,18 @@ if uploaded_image:
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
     st.write(f"**Miles:** {miles_auto if miles_auto else '❌ Not found'}")
 
-# === Manual Entry Form (Auto-filled if image uploaded) ===
+    # Optional Debug
+    with st.expander("🧪 Show Raw OCR Text"):
+        st.text_area("OCR Output", extracted_text, height=150)
+
+# === Entry Form ===
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
         order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto)
     with col2:
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto)
+
     submitted = st.form_submit_button("Add Entry")
     if submitted:
         now = datetime.now()
@@ -157,12 +159,12 @@ with st.form("entry_form"):
             df.to_csv(DATA_FILE, index=False)
         st.success("✅ Entry saved!")
 
-# === Metrics + Charts ===
+# === Metrics & Charts ===
 if not df.empty and "timestamp" in df.columns:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
-    df["earnings_per_mile"] = df["order_total"] / df["miles"].replace(0, pd.NA)
+    df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
 
     daily_totals = df.groupby("date")["order_total"].sum()
     hourly_rate = df.groupby("hour")["order_total"].mean()
@@ -172,7 +174,12 @@ if not df.empty and "timestamp" in df.columns:
     earnings_per_mile = total_earned / total_miles if total_miles else 0
     days_logged = df["date"].nunique()
     avg_per_day = total_earned / days_logged if days_logged else 0
-    daily_goal_remaining = max(TARGET_DAILY - daily_totals.iloc[-1], 0) if not daily_totals.empty else TARGET_DAILY
+
+    if not daily_totals.empty:
+        last_day_total = daily_totals.iloc[-1]
+        daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
+    else:
+        daily_goal_remaining = TARGET_DAILY
 
     col1, col2 = st.columns(2)
     col1.metric("Total Earned", f"${total_earned:.2f}")
@@ -195,8 +202,6 @@ if not df.empty and "timestamp" in df.columns:
         best_hour = hourly_rate.idxmax()
         st.success(f"Try working more around **{best_hour}:00** — that's your highest earning hour!")
     else:
-        st.info("No hourly data available yet. Add some entries to get smart suggestions.")
-
-
+        st.info("No hourly data yet. Add entries to unlock smart suggestions.")
 else:
     st.info("Add some data to get started.")
