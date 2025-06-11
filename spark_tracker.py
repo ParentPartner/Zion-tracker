@@ -7,6 +7,8 @@ import easyocr
 import gspread
 from google.oauth2.service_account import Credentials
 import os
+import pytz
+
 
 # === Config ===
 TARGET_DAILY = 200
@@ -147,7 +149,8 @@ with st.form("entry_form"):
 
     submitted = st.form_submit_button("Add Entry")
     if submitted:
-        now = datetime.now()
+        local_tz = pytz.timezone("US/Eastern")  # Change this if you're in a different timezone
+        now = datetime.now(local_tz)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
             "timestamp": now.isoformat(),
