@@ -56,22 +56,27 @@ if "logged_in" not in st.session_state:
     login()
     st.stop()
 
-# === Load Data ===
-if use_google_sheets:
-    try:
-        records = worksheet.get_all_records()
-        df = pd.DataFrame(records)
-        if 'timestamp' in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-        else:
-            df = pd.DataFrame(columns=HEADERS)
-    except:
-        df = pd.DataFrame(columns=HEADERS)
-else:
-    if os.path.exists(DATA_FILE):
-        df = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+# === 🔧 Load Data (wrapped in a reusable function)
+def load_data():
+    if use_google_sheets:
+        try:
+            records = worksheet.get_all_records()
+            df_local = pd.DataFrame(records)
+            if 'timestamp' in df_local.columns:
+                df_local["timestamp"] = pd.to_datetime(df_local["timestamp"], errors="coerce")
+            else:
+                df_local = pd.DataFrame(columns=HEADERS)
+        except Exception as e:
+            st.error(f"Error reading from Google Sheets: {e}")
+            df_local = pd.DataFrame(columns=HEADERS)
     else:
-        df = pd.DataFrame(columns=HEADERS)
+        if os.path.exists(DATA_FILE):
+            df_local = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+        else:
+            df_local = pd.DataFrame(columns=HEADERS)
+    return df_local
+
+df = load_data()
 
 st.title("🚗 Spark Delivery Tracker")
 
@@ -80,11 +85,9 @@ def extract_text_and_time(image_bytes):
     reader = easyocr.Reader(['en'], gpu=False)
     results = reader.readtext(image_bytes)
 
-    # Combine text for parsing
     full_text = " ".join([text for _, text, _ in results])
     top_left_time = None
 
-    # Attempt to find time at top-left of image
     if results:
         top_left = sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))[0]
         candidate_text = top_left[1].strip()
@@ -126,7 +129,7 @@ def parse_order_details(text):
 
     return total, miles
 
-# === OCR Image Upload ===
+# === OCR Upload ===
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
 total_auto, miles_auto, ocr_time = 0.0, 0.0, None
@@ -169,7 +172,7 @@ with st.form("entry_form"):
     custom_time = st.time_input("Delivery Time", value=ocr_datetime.time())
     submitted = st.form_submit_button("Add Entry")
 
-        if submitted:
+    if submitted:
         timestamp = now.replace(hour=custom_time.hour, minute=custom_time.minute, second=0, microsecond=0)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
@@ -188,20 +191,24 @@ with st.form("entry_form"):
                 df.to_csv(DATA_FILE, index=False)
 
             st.success("✅ Entry saved!")
-            st.experimental_rerun()  # 🔁 Force rerun to refresh charts and goal
+
+            # 🔧 Reload latest data before rerun
+            df = load_data()
+            st.experimental_rerun()
+
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
 
-
-# === Visualizations ===
+# === Visualization ===
 if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
     df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
 
-    daily_totals = df.groupby("date")["order_total"].sum()
-    hourly_rate = df.groupby("hour")["order_total"].mean()
+    # 🔧 Sort for consistent chart order
+    daily_totals = df.groupby("date")["order_total"].sum().sort_index()
+    hourly_rate = df.groupby("hour")["order_total"].mean().sort_index()
 
     total_earned = df["order_total"].sum()
     total_miles = df["miles"].sum()
