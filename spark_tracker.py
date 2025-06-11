@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, time  # Added time import
+from datetime import datetime, time
 from io import BytesIO
 import easyocr
 import gspread
 from google.oauth2.service_account import Credentials
 import os
 import pytz
+import plotly.express as px
+import plotly.graph_objects as go
 
 # === Config ===
 TARGET_DAILY = 200
@@ -48,7 +50,7 @@ def login():
         if submitted:
             if username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
                 st.session_state["logged_in"] = True
-                st.rerun()  # Changed to st.rerun()
+                st.rerun()
             else:
                 st.error("Invalid login")
 
@@ -200,31 +202,33 @@ with st.form("entry_form"):
                 df.to_csv(DATA_FILE, index=False)
 
             st.success("✅ Entry saved!")
-            st.rerun()  # Changed to st.rerun()
+            st.rerun()
 
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
 
-# === Visualization ===
+# === Visualization - Enhanced with Plotly ===
 if not df.empty:
+    # Process data
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
     df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
 
-    # 🔧 Sort for consistent chart order
-    daily_totals = df.groupby("date")["order_total"].sum().sort_index()
-    hourly_rate = df.groupby("hour")["order_total"].mean().sort_index()
-
+    # Calculate metrics
+    daily_totals = df.groupby("date")["order_total"].sum().sort_index().reset_index()
+    hourly_rate = df.groupby("hour")["order_total"].mean().sort_index().reset_index()
+    
     total_earned = df["order_total"].sum()
     total_miles = df["miles"].sum()
     earnings_per_mile = total_earned / total_miles if total_miles else 0
     days_logged = df["date"].nunique()
     avg_per_day = total_earned / days_logged if days_logged else 0
 
-    last_day_total = daily_totals.iloc[-1] if not daily_totals.empty else 0
+    last_day_total = daily_totals.iloc[-1]["order_total"] if not daily_totals.empty else 0
     daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
 
+    # Display metrics
     col1, col2 = st.columns(2)
     col1.metric("Total Earned", f"${total_earned:.2f}")
     col2.metric("Total Miles", f"{total_miles:.1f}")
@@ -235,16 +239,129 @@ if not df.empty:
 
     st.markdown(f"🧾 **Today's Goal Left:** ${daily_goal_remaining:.2f}")
 
+    # === Enhanced Daily Earnings Chart ===
     st.subheader("📈 Daily Earnings")
-    st.bar_chart(daily_totals)
+    if not daily_totals.empty:
+        fig = px.bar(
+            daily_totals,
+            x="date",
+            y="order_total",
+            labels={"order_total": "Earnings ($)", "date": "Date"},
+            text=[f"${x:.2f}" for x in daily_totals["order_total"]],
+            color="order_total",
+            color_continuous_scale="Bluered"
+        )
+        fig.update_traces(
+            marker_line_color="black",
+            marker_line_width=1,
+            textposition="outside"
+        )
+        fig.update_layout(
+            yaxis=dict(
+                title="Earnings ($)",
+                gridcolor="lightgray",
+                tickprefix="$"
+            ),
+            xaxis=dict(
+                gridcolor="lightgray",
+                type="category"
+            ),
+            plot_bgcolor="white",
+            hovermode="x"
+        )
+        # Add target line
+        fig.add_hline(
+            y=TARGET_DAILY,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="Daily Target",
+            annotation_position="top left"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No daily data to show.")
 
-    st.subheader("🕒 Hourly $ / Order")
-    st.line_chart(hourly_rate)
+    # === Enhanced Hourly Earnings Chart ===
+    st.subheader("🕒 Average $ per Hour")
+    if not hourly_rate.empty:
+        fig = px.line(
+            hourly_rate,
+            x="hour",
+            y="order_total",
+            markers=True,
+            labels={"order_total": "Avg Earnings ($)", "hour": "Hour of Day"},
+            text=[f"${x:.2f}" for x in hourly_rate["order_total"]]
+        )
+        fig.update_traces(
+            line=dict(width=3),
+            marker=dict(size=10, line=dict(width=2, color="black")),
+            textposition="top center"
+        )
+        fig.update_layout(
+            yaxis=dict(
+                title="Avg Earnings ($)",
+                gridcolor="lightgray",
+                tickprefix="$"
+            ),
+            xaxis=dict(
+                title="Hour of Day (24h)",
+                gridcolor="lightgray",
+                tickvals=list(range(0, 24))
+            ),
+            plot_bgcolor="white",
+            hovermode="x"
+        )
+        # Highlight best hour
+        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]
+        fig.add_annotation(
+            x=best_hour["hour"],
+            y=best_hour["order_total"],
+            text=f"Best hour: ${best_hour['order_total']:.2f}",
+            showarrow=True,
+            arrowhead=2,
+            ax=0,
+            ay=-40
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No hourly data to show.")
 
+    # === Earnings Per Mile Distribution ===
+    st.subheader("📊 Earnings Per Mile Distribution")
+    if len(df) > 1:
+        fig = px.histogram(
+            df,
+            x="earnings_per_mile",
+            nbins=20,
+            labels={"earnings_per_mile": "$ per Mile"},
+            color_discrete_sequence=["indianred"]
+        )
+        fig.update_layout(
+            yaxis_title="Number of Orders",
+            xaxis_title="Earnings per Mile ($)",
+            xaxis=dict(tickprefix="$", gridcolor="lightgray"),
+            yaxis=dict(gridcolor="lightgray"),
+            plot_bgcolor="white"
+        )
+        # Add average line
+        avg_epm = df["earnings_per_mile"].mean()
+        fig.add_vline(
+            x=avg_epm,
+            line_dash="dash",
+            line_color="blue",
+            annotation_text=f"Avg: ${avg_epm:.2f}",
+            annotation_position="top"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Need more data to show distribution")
+
+    # === Smart Suggestion ===
     st.subheader("🧠 Smart Suggestion")
     if not hourly_rate.empty:
-        best_hour = hourly_rate.idxmax()
-        st.success(f"Try working more around **{best_hour}:00** — that's your highest earning hour!")
+        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["hour"]
+        best_earning = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["order_total"]
+        st.success(f"**Try working around {best_hour}:00** - Highest average earnings (${best_earning:.2f}/order)")
     else:
         st.info("No hourly data yet. Add entries to unlock smart suggestions.")
 else:
