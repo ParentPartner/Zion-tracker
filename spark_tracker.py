@@ -29,7 +29,6 @@ try:
     gc = gspread.authorize(creds)
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
-    # Ensure headers exist
     if not worksheet.row_values(1):
         worksheet.insert_row(HEADERS, index=1)
 
@@ -78,18 +77,13 @@ else:
 def extract_text(image_bytes):
     reader = easyocr.Reader(['en'], gpu=False)
     results = reader.readtext(image_bytes)
-    return " ".join([text for _, text, _ in results])
+    return results
 
-def parse_order_details(text):
-    total, miles, order_time = None, None, None
+def parse_order_details(results):
+    total, miles, detected_time = None, None, None
 
-    clean_text = (
-        text.replace(",", "")
-            .replace("O", "0")
-            .replace("S", "$")
-            .replace("s", "$")
-    )
-
+    combined_text = " ".join([text for _, text, _ in results])
+    clean_text = combined_text.replace(",", "").replace("O", "0").replace("S", "$").replace("s", "$")
     lines = clean_text.lower().split("\n")
     dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
     dollar_values = [float(val) for val in dollar_values if float(val) >= 5]
@@ -98,11 +92,8 @@ def parse_order_details(text):
         if "estimate" in line:
             match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
             if match:
-                try:
-                    total = float(match.group(1))
-                    break
-                except:
-                    pass
+                total = float(match.group(1))
+                break
 
     if total is None and dollar_values:
         total = max(dollar_values)
@@ -111,72 +102,85 @@ def parse_order_details(text):
     if miles_match:
         miles = float(miles_match.group(1))
 
-    time_match = re.search(r"\b(\d{1,2}:\d{2})\b", clean_text)
-    if time_match:
-        order_time = time_match.group(1)
+    # Try extracting timestamp from upper-left text
+    for _, text, (top_left, _, _, _) in results:
+        if top_left[1] < 100:  # top of the screen
+            match = re.search(r"\b(\d{1,2}:\d{2})\b", text)
+            if match:
+                detected_time = match.group(1)
+                break
 
-    return total, miles, order_time
+    return total, miles, detected_time
 
-# === App Title ===
-st.title("🚗 Spark Delivery Tracker")
+def get_combined_datetime(ocr_time):
+    tz = pytz.timezone("US/Eastern")
+    now = datetime.now(tz)
+    if ocr_time:
+        try:
+            parsed = datetime.strptime(ocr_time, "%H:%M")
+            combined = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            return combined
+        except:
+            pass
+    return now
 
 # === Image Upload + OCR ===
+st.title("🚗 Spark Delivery Tracker")
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Drag & drop or browse for screenshot", type=["jpg", "jpeg", "png"])
 
-# Check and reset OCR cache if a new image is uploaded
 if uploaded_image:
-    # Compare by filename (Streamlit doesn't allow direct file comparison)
     if "last_filename" not in st.session_state or st.session_state["last_filename"] != uploaded_image.name:
         st.session_state["ocr_result"] = None
         st.session_state["last_filename"] = uploaded_image.name
 
-# Only scan if not already scanned
-if uploaded_image and "ocr_result" not in st.session_state or st.session_state["ocr_result"] is None:
-    with st.spinner("Reading screenshot..."):
+if uploaded_image and (("ocr_result" not in st.session_state) or st.session_state["ocr_result"] is None):
+    with st.spinner("🔍 Scanning image..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
-        extracted_text = extract_text(image_bytes)
-        total_auto, miles_auto, _ = parse_order_details(extracted_text)
-
+        ocr_results = extract_text(image_bytes)
+        total_auto, miles_auto, ocr_time = parse_order_details(ocr_results)
         st.session_state["ocr_result"] = {
-            "text": extracted_text,
+            "text": " ".join([t[1] for t in ocr_results]),
             "total": total_auto,
-            "miles": miles_auto
+            "miles": miles_auto,
+            "ocr_time": ocr_time
         }
 
-# Use OCR result if available
+# === Manual Entry ===
 total_auto, miles_auto = 0.0, 0.0
-if "ocr_result" in st.session_state and st.session_state["ocr_result"]:
-    extracted_text = st.session_state["ocr_result"]["text"]
-    total_auto = st.session_state["ocr_result"]["total"]
-    miles_auto = st.session_state["ocr_result"]["miles"]
+if "ocr_result" not in st.session_state:
+    st.session_state["ocr_result"] = {}
 
+extracted = st.session_state["ocr_result"]
+total_auto = extracted.get("total", 0.0)
+miles_auto = extracted.get("miles", 0.0)
+ocr_time = extracted.get("ocr_time", None)
+
+if extracted:
     st.write("🧾 **Extracted Info**")
-    st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
-    st.write(f"**Miles:** {miles_auto if miles_auto else '❌ Not found'}")
+    st.write(f"**Order Total:** {total_auto or '❌ Not found'}")
+    st.write(f"**Miles:** {miles_auto or '❌ Not found'}")
+    st.write(f"**Time from screenshot:** {ocr_time or '❌ Not found'}")
+    with st.expander("🔍 Show Raw OCR Text"):
+        st.text_area("OCR Output", extracted.get("text", ""), height=150)
 
-    with st.expander("🧪 Show Raw OCR Text"):
-        st.text_area("OCR Output", extracted_text, height=150)
-
-# === Manual Entry Form ===
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
         order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto or 0.0)
     with col2:
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
-
     submitted = st.form_submit_button("Add Entry")
+
     if submitted:
-        local_tz = pytz.timezone("US/Eastern")  # Adjust as needed
-        now = datetime.now(local_tz)
+        timestamp = get_combined_datetime(ocr_time)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
-            "timestamp": now.isoformat(),
+            "timestamp": timestamp.isoformat(),
             "order_total": float(order_total),
             "miles": float(miles),
             "earnings_per_mile": earnings_per_mile,
-            "hour": now.hour
+            "hour": timestamp.hour
         }
 
         try:
@@ -189,7 +193,7 @@ with st.form("entry_form"):
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
 
-# === Metrics & Visualization ===
+# === Metrics ===
 if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
@@ -204,7 +208,6 @@ if not df.empty:
     earnings_per_mile = total_earned / total_miles if total_miles else 0
     days_logged = df["date"].nunique()
     avg_per_day = total_earned / days_logged if days_logged else 0
-
     last_day_total = daily_totals.iloc[-1] if not daily_totals.empty else 0
     daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
 
@@ -216,19 +219,19 @@ if not df.empty:
     col3.metric("Avg $ / Mile", f"${earnings_per_mile:.2f}")
     col4.metric("Avg Per Day", f"${avg_per_day:.2f}")
 
-    st.markdown(f"🧾 **Today's Goal Left:** ${daily_goal_remaining:.2f}")
+    st.markdown(f"🎯 **Today's Goal Left:** ${daily_goal_remaining:.2f}")
 
-    st.subheader("📈 Daily Earnings")
+    st.subheader("📊 Daily Earnings")
     st.bar_chart(daily_totals)
 
-    st.subheader("🕒 Hourly $ / Order")
+    st.subheader("🕐 Hourly $ / Order")
     st.line_chart(hourly_rate)
 
-    st.subheader("🧠 Smart Suggestion")
+    st.subheader("💡 Smart Suggestion")
     if not hourly_rate.empty:
         best_hour = hourly_rate.idxmax()
         st.success(f"Try working more around **{best_hour}:00** — that's your highest earning hour!")
     else:
-        st.info("No hourly data yet. Add entries to unlock smart suggestions.")
+        st.info("Add entries to get hourly suggestions.")
 else:
-    st.info("Add some data to get started.")
+    st.info("Add some data to get started!")
