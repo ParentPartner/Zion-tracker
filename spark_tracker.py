@@ -57,26 +57,32 @@ if "logged_in" not in st.session_state:
     st.stop()
 
 # === 🔧 Load Data (wrapped in a reusable function)
+# === Load Data ===
 def load_data():
     if use_google_sheets:
         try:
-            records = worksheet.get_all_records()
-            df_local = pd.DataFrame(records)
-            if 'timestamp' in df_local.columns:
-                df_local["timestamp"] = pd.to_datetime(df_local["timestamp"], errors="coerce")
-            else:
-                df_local = pd.DataFrame(columns=HEADERS)
+            records = worksheet.get_all_values()
+            if not records or len(records) < 2:
+                return pd.DataFrame(columns=HEADERS)
+            headers = records[0]
+            data = records[1:]
+
+            df = pd.DataFrame(data, columns=headers)
+            for col in ["order_total", "miles", "earnings_per_mile"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df["hour"] = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
+            return df.dropna(subset=["timestamp"])
         except Exception as e:
-            st.error(f"Error reading from Google Sheets: {e}")
-            df_local = pd.DataFrame(columns=HEADERS)
+            st.error(f"Error loading from Google Sheets: {e}")
+            return pd.DataFrame(columns=HEADERS)
     else:
         if os.path.exists(DATA_FILE):
-            df_local = pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
-        else:
-            df_local = pd.DataFrame(columns=HEADERS)
-    return df_local
+            return pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+        return pd.DataFrame(columns=HEADERS)
 
 df = load_data()
+
 
 st.title("🚗 Spark Delivery Tracker")
 
