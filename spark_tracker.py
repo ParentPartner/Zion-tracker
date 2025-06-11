@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime
+from datetime import datetime, time  # Added time import
 from io import BytesIO
 import easyocr
 import gspread
@@ -48,7 +48,7 @@ def login():
         if submitted:
             if username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
                 st.session_state["logged_in"] = True
-                st.rerun()
+                st.rerun()  # Changed to st.rerun()
             else:
                 st.error("Invalid login")
 
@@ -56,7 +56,6 @@ if "logged_in" not in st.session_state:
     login()
     st.stop()
 
-# === 🔧 Load Data (wrapped in a reusable function)
 # === Load Data ===
 def load_data():
     if use_google_sheets:
@@ -82,7 +81,6 @@ def load_data():
         return pd.DataFrame(columns=HEADERS)
 
 df = load_data()
-
 
 st.title("🚗 Spark Delivery Tracker")
 
@@ -139,12 +137,21 @@ def parse_order_details(text):
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
 total_auto, miles_auto, ocr_time = 0.0, 0.0, None
+ocr_time_value = None  # Initialize time value
 
 if uploaded_image:
     with st.spinner("Reading screenshot..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
         extracted_text, ocr_time = extract_text_and_time(image_bytes)
         total_auto, miles_auto = parse_order_details(extracted_text)
+        
+        # Convert OCR time to time object if available
+        if ocr_time:
+            try:
+                hour, minute = map(int, ocr_time.split(':'))
+                ocr_time_value = time(hour, minute)
+            except ValueError:
+                ocr_time_value = None
 
     st.write("🧾 **Extracted Info**")
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
@@ -165,21 +172,17 @@ with st.form("entry_form"):
     with col2:
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
 
-    try:
-        if ocr_time:
-            ocr_datetime = datetime.strptime(ocr_time, "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day
-            )
-        else:
-            ocr_datetime = now
-    except:
-        ocr_datetime = now
-
-    custom_time = st.time_input("Delivery Time", value=ocr_datetime.time())
+    # Use OCR time if available, otherwise current time
+    form_default_time = ocr_time_value or now.time()
+    custom_time = st.time_input("Delivery Time", value=form_default_time)
+    
     submitted = st.form_submit_button("Add Entry")
 
     if submitted:
-        timestamp = now.replace(hour=custom_time.hour, minute=custom_time.minute, second=0, microsecond=0)
+        # Use current datetime with custom time
+        timestamp = datetime.combine(now.date(), custom_time)
+        timestamp = tz.localize(timestamp)
+        
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
             "timestamp": timestamp.isoformat(),
@@ -197,10 +200,7 @@ with st.form("entry_form"):
                 df.to_csv(DATA_FILE, index=False)
 
             st.success("✅ Entry saved!")
-
-            # 🔧 Reload latest data before rerun
-            df = load_data()
-            st.experimental_rerun()
+            st.rerun()  # Changed to st.rerun()
 
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
