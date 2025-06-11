@@ -6,3 +6,5 @@ easyocr
 gspread
 oauth2client
 gspread-dataframe
+plotly
+pytz
