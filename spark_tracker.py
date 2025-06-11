@@ -7,7 +7,7 @@ import easyocr
 import gspread
 from google.oauth2.service_account import Credentials
 import os
-import pytz  # ✅ MISSING IMPORT FIXED
+import pytz
 
 # === Config ===
 TARGET_DAILY = 200
@@ -76,13 +76,26 @@ else:
 st.title("🚗 Spark Delivery Tracker")
 
 # === OCR Functions ===
-def extract_text(image_bytes):
+def extract_text_and_time(image_bytes):
     reader = easyocr.Reader(['en'], gpu=False)
     results = reader.readtext(image_bytes)
-    return " ".join([text for _, text, _ in results])
+
+    # Combine text for parsing
+    full_text = " ".join([text for _, text, _ in results])
+    top_left_time = None
+
+    # Attempt to find time at top-left of image
+    if results:
+        top_left = sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))[0]
+        candidate_text = top_left[1].strip()
+        match = re.match(r"(\d{1,2}:\d{2})", candidate_text)
+        if match:
+            top_left_time = match.group(1)
+
+    return full_text, top_left_time
 
 def parse_order_details(text):
-    total, miles, order_time = None, None, None
+    total, miles = None, None
     clean_text = (
         text.replace(",", "")
             .replace("O", "0")
@@ -111,32 +124,29 @@ def parse_order_details(text):
     if miles_match:
         miles = float(miles_match.group(1))
 
-    time_match = re.search(r"\b(\d{1,2}:\d{2})\b", clean_text)
-    if time_match:
-        order_time = time_match.group(1)
-
-    return total, miles, order_time
+    return total, miles
 
 # === OCR Image Upload ===
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
-total_auto, miles_auto, ocr_time = 0.0, 0.0, None  # ✅ INITIALIZE ocr_time
+total_auto, miles_auto, ocr_time = 0.0, 0.0, None
 
 if uploaded_image:
     with st.spinner("Reading screenshot..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
-        extracted_text = extract_text(image_bytes)
-        total_auto, miles_auto, ocr_time = parse_order_details(extracted_text)
+        extracted_text, ocr_time = extract_text_and_time(image_bytes)
+        total_auto, miles_auto = parse_order_details(extracted_text)
 
     st.write("🧾 **Extracted Info**")
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
     st.write(f"**Miles:** {miles_auto if miles_auto else '❌ Not found'}")
+    st.write(f"**Time (from screenshot):** {ocr_time if ocr_time else '❌ Not found'}")
 
     with st.expander("🧪 Show Raw OCR Text"):
         st.text_area("OCR Output", extracted_text, height=150)
 
 # === Manual Entry Form ===
-tz = pytz.timezone("US/Eastern")  # ✅ Moved here
+tz = pytz.timezone("US/Eastern")
 now = datetime.now(tz)
 
 with st.form("entry_form"):
@@ -146,7 +156,6 @@ with st.form("entry_form"):
     with col2:
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
 
-    # Default to OCR time if valid
     try:
         if ocr_time:
             ocr_datetime = datetime.strptime(ocr_time, "%H:%M").replace(
