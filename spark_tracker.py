@@ -149,7 +149,7 @@ with st.form("entry_form"):
 
     submitted = st.form_submit_button("Add Entry")
     if submitted:
-        local_tz = pytz.timezone("US/Eastern")  # Change this if you're in a different timezone
+        local_tz = pytz.timezone("US/Eastern")  # Change if needed
         now = datetime.now(local_tz)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
