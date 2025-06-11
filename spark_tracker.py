@@ -7,6 +7,7 @@ import easyocr
 import gspread
 from google.oauth2.service_account import Credentials
 import os
+import pytz  # ✅ MISSING IMPORT FIXED
 
 # === Config ===
 TARGET_DAILY = 200
@@ -28,7 +29,6 @@ try:
     gc = gspread.authorize(creds)
     worksheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
-    # Ensure headers exist
     if not worksheet.row_values(1):
         worksheet.insert_row(HEADERS, index=1)
 
@@ -73,7 +73,6 @@ else:
     else:
         df = pd.DataFrame(columns=HEADERS)
 
-# === App Title ===
 st.title("🚗 Spark Delivery Tracker")
 
 # === OCR Functions ===
@@ -84,7 +83,6 @@ def extract_text(image_bytes):
 
 def parse_order_details(text):
     total, miles, order_time = None, None, None
-
     clean_text = (
         text.replace(",", "")
             .replace("O", "0")
@@ -119,16 +117,16 @@ def parse_order_details(text):
 
     return total, miles, order_time
 
-# === Image Upload + OCR ===
+# === OCR Image Upload ===
 st.subheader("📸 Optional: Upload Screenshot")
-uploaded_image = st.file_uploader("Drag & drop or browse for screenshot", type=["jpg", "jpeg", "png"])
-total_auto, miles_auto = 0.0, 0.0
+uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
+total_auto, miles_auto, ocr_time = 0.0, 0.0, None  # ✅ INITIALIZE ocr_time
 
 if uploaded_image:
     with st.spinner("Reading screenshot..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
         extracted_text = extract_text(image_bytes)
-        total_auto, miles_auto, _ = parse_order_details(extracted_text)
+        total_auto, miles_auto, ocr_time = parse_order_details(extracted_text)
 
     st.write("🧾 **Extracted Info**")
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
@@ -138,6 +136,9 @@ if uploaded_image:
         st.text_area("OCR Output", extracted_text, height=150)
 
 # === Manual Entry Form ===
+tz = pytz.timezone("US/Eastern")  # ✅ Moved here
+now = datetime.now(tz)
+
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -145,25 +146,21 @@ with st.form("entry_form"):
     with col2:
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
 
-    # Default time input to OCR time if available, else current time
-    tz = pytz.timezone("US/Eastern")
-    now = datetime.now(tz)
-    if ocr_time:
-        try:
+    # Default to OCR time if valid
+    try:
+        if ocr_time:
             ocr_datetime = datetime.strptime(ocr_time, "%H:%M").replace(
                 year=now.year, month=now.month, day=now.day
             )
-        except:
+        else:
             ocr_datetime = now
-    else:
+    except:
         ocr_datetime = now
 
     custom_time = st.time_input("Delivery Time", value=ocr_datetime.time())
-
     submitted = st.form_submit_button("Add Entry")
 
     if submitted:
-        # Combine chosen time with current date
         timestamp = now.replace(hour=custom_time.hour, minute=custom_time.minute, second=0, microsecond=0)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
@@ -184,8 +181,7 @@ with st.form("entry_form"):
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
 
-
-# === Metrics & Visualization ===
+# === Visualizations ===
 if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
