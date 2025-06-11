@@ -169,7 +169,7 @@ with st.form("entry_form"):
     custom_time = st.time_input("Delivery Time", value=ocr_datetime.time())
     submitted = st.form_submit_button("Add Entry")
 
-    if submitted:
+        if submitted:
         timestamp = now.replace(hour=custom_time.hour, minute=custom_time.minute, second=0, microsecond=0)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
@@ -186,9 +186,12 @@ with st.form("entry_form"):
             else:
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 df.to_csv(DATA_FILE, index=False)
+
             st.success("✅ Entry saved!")
+            st.experimental_rerun()  # 🔁 Force rerun to refresh charts and goal
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
+
 
 # === Visualizations ===
 if not df.empty:
