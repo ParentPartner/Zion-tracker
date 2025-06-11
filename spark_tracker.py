@@ -9,7 +9,6 @@ from google.oauth2.service_account import Credentials
 import os
 import pytz
 
-
 # === Config ===
 TARGET_DAILY = 200
 CAR_COST_MONTHLY = 620 + 120
@@ -75,9 +74,6 @@ else:
     else:
         df = pd.DataFrame(columns=HEADERS)
 
-# === App Title ===
-st.title("🚗 Spark Delivery Tracker")
-
 # === OCR Functions ===
 def extract_text(image_bytes):
     reader = easyocr.Reader(['en'], gpu=False)
@@ -121,16 +117,39 @@ def parse_order_details(text):
 
     return total, miles, order_time
 
+# === App Title ===
+st.title("🚗 Spark Delivery Tracker")
+
 # === Image Upload + OCR ===
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Drag & drop or browse for screenshot", type=["jpg", "jpeg", "png"])
-total_auto, miles_auto = 0.0, 0.0
 
+# Check and reset OCR cache if a new image is uploaded
 if uploaded_image:
+    # Compare by filename (Streamlit doesn't allow direct file comparison)
+    if "last_filename" not in st.session_state or st.session_state["last_filename"] != uploaded_image.name:
+        st.session_state["ocr_result"] = None
+        st.session_state["last_filename"] = uploaded_image.name
+
+# Only scan if not already scanned
+if uploaded_image and "ocr_result" not in st.session_state or st.session_state["ocr_result"] is None:
     with st.spinner("Reading screenshot..."):
         image_bytes = BytesIO(uploaded_image.read()).getvalue()
         extracted_text = extract_text(image_bytes)
         total_auto, miles_auto, _ = parse_order_details(extracted_text)
+
+        st.session_state["ocr_result"] = {
+            "text": extracted_text,
+            "total": total_auto,
+            "miles": miles_auto
+        }
+
+# Use OCR result if available
+total_auto, miles_auto = 0.0, 0.0
+if "ocr_result" in st.session_state and st.session_state["ocr_result"]:
+    extracted_text = st.session_state["ocr_result"]["text"]
+    total_auto = st.session_state["ocr_result"]["total"]
+    miles_auto = st.session_state["ocr_result"]["miles"]
 
     st.write("🧾 **Extracted Info**")
     st.write(f"**Order Total:** {total_auto if total_auto else '❌ Not found'}")
@@ -149,7 +168,7 @@ with st.form("entry_form"):
 
     submitted = st.form_submit_button("Add Entry")
     if submitted:
-        local_tz = pytz.timezone("US/Eastern")  # Change if needed
+        local_tz = pytz.timezone("US/Eastern")  # Adjust as needed
         now = datetime.now(local_tz)
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
         new_row = {
