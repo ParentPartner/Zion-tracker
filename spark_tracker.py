@@ -82,7 +82,7 @@ def extract_text(image_bytes):
 def parse_order_details(results):
     total, miles, detected_time = None, None, None
 
-    combined_text = " ".join([text for _, text, _ in results])
+    combined_text = " ".join([text for text in [r[1] for r in results if isinstance(r, (list, tuple)) and len(r) >= 2]])
     clean_text = combined_text.replace(",", "").replace("O", "0").replace("S", "$").replace("s", "$")
     lines = clean_text.lower().split("\n")
     dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
@@ -102,13 +102,18 @@ def parse_order_details(results):
     if miles_match:
         miles = float(miles_match.group(1))
 
-    # Try extracting timestamp from upper-left text
-    for _, text, (top_left, _, _, _) in results:
-        if top_left[1] < 100:  # top of the screen
-            match = re.search(r"\b(\d{1,2}:\d{2})\b", text)
-            if match:
-                detected_time = match.group(1)
-                break
+    # OCR Time Detection (top of screen)
+    for r in results:
+        if not isinstance(r, (list, tuple)) or len(r) < 3:
+            continue
+        bbox, text, _ = r
+        if isinstance(bbox, (list, tuple)) and len(bbox) >= 1:
+            top_left = bbox[0]
+            if top_left[1] < 100:  # top of screen
+                match = re.search(r"\b(\d{1,2}:\d{2})\b", text)
+                if match:
+                    detected_time = match.group(1)
+                    break
 
     return total, miles, detected_time
 
