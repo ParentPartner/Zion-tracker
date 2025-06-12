@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from io import BytesIO
 import easyocr
 import gspread
@@ -84,63 +84,99 @@ def load_data():
 
 df = load_data()
 
-# Helper function to get today's data
-def get_today_data(df):
-    tz = pytz.timezone("US/Eastern")
-    today = datetime.now(tz).date()
-    today_df = df[df['timestamp'].dt.date == today]
-    return today_df if not today_df.empty else pd.DataFrame(columns=df.columns)
+# Helper functions
+def get_date_data(df, target_date):
+    target_df = df[df['timestamp'].dt.date == target_date]
+    return target_df if not target_df.empty else pd.DataFrame(columns=df.columns)
 
+def get_yesterday():
+    tz = pytz.timezone("US/Eastern")
+    return (datetime.now(tz) - timedelta(days=1)).date()
+
+# === Daily Check-In ===
+tz = pytz.timezone("US/Eastern")
+today = datetime.now(tz).date()
+yesterday = get_yesterday()
+
+if "daily_checkin" not in st.session_state or st.session_state.daily_checkin.get("date") != today:
+    with st.container(border=True):
+        st.header("📅 Daily Check-In")
+        
+        # Check if user is working today
+        working_today = st.radio(
+            "Are you working today?",
+            ["Yes", "No"],
+            index=0
+        )
+        
+        if working_today == "Yes":
+            # Get yesterday's data for comparison
+            yesterday_df = get_date_data(df, yesterday)
+            yesterday_earned = yesterday_df['order_total'].sum() if not yesterday_df.empty else 0
+            
+            # Set up columns for layout
+            col1, col2 = st.columns([2, 3])
+            
+            with col1:
+                # Show yesterday's performance
+                if yesterday_earned > 0:
+                    st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
+                else:
+                    st.info("No data for yesterday")
+                
+                # Goal input
+                default_goal = st.session_state.get("last_goal", TARGET_DAILY)
+                today_goal = st.number_input(
+                    "Today's Goal ($)",
+                    min_value=0,
+                    value=default_goal,
+                    step=10
+                )
+            
+            with col2:
+                # Notes section with larger input
+                notes = st.text_area(
+                    "Today's Notes & Goals",
+                    placeholder="Enter your plans, goals, or reminders for today...",
+                    height=100
+                )
+            
+            if st.button("Start Tracking", type="primary"):
+                st.session_state.daily_checkin = {
+                    "date": today,
+                    "working": True,
+                    "goal": today_goal,
+                    "notes": notes
+                }
+                st.session_state.last_goal = today_goal
+                st.rerun()
+        else:
+            if st.button("Take the day off"):
+                st.session_state.daily_checkin = {
+                    "date": today,
+                    "working": False,
+                    "goal": 0,
+                    "notes": "Day off"
+                }
+                st.rerun()
+    st.stop()  # Don't proceed until check-in complete
+
+# Use today's custom goal if set
+current_target = st.session_state.daily_checkin.get("goal", TARGET_DAILY)
+
+# === Main App Display ===
 st.title("🚗 Spark Delivery Tracker")
 
-# === OCR Functions ===
-def extract_text_and_time(image_bytes):
-    reader = easyocr.Reader(['en'], gpu=False)
-    results = reader.readtext(image_bytes)
+# Display notes prominently if they exist
+if st.session_state.daily_checkin.get("notes"):
+    with st.container(border=True):
+        st.subheader("📝 Today's Notes")
+        st.write(st.session_state.daily_checkin["notes"])
 
-    full_text = " ".join([text for _, text, _ in results])
-    top_left_time = None
-
-    if results:
-        top_left = sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))[0]
-        candidate_text = top_left[1].strip()
-        match = re.match(r"(\d{1,2}:\d{2})", candidate_text)
-        if match:
-            top_left_time = match.group(1)
-
-    return full_text, top_left_time
-
-def parse_order_details(text):
-    total, miles = None, None
-    clean_text = (
-        text.replace(",", "")
-            .replace("O", "0")
-            .replace("S", "$")
-            .replace("s", "$")
-    )
-
-    lines = clean_text.lower().split("\n")
-    dollar_values = re.findall(r"\$?(\d{1,4}\.\d{2})", clean_text)
-    dollar_values = [float(val) for val in dollar_values if float(val) >= 5]
-
-    for line in lines:
-        if "estimate" in line:
-            match = re.search(r"\$?(\d{1,4}\.\d{2})", line)
-            if match:
-                try:
-                    total = float(match.group(1))
-                    break
-                except:
-                    pass
-
-    if total is None and dollar_values:
-        total = max(dollar_values)
-
-    miles_match = re.search(r"(\d+(\.\d+)?)\s*(mi|miles)", clean_text)
-    if miles_match:
-        miles = float(miles_match.group(1))
-
-    return total, miles
+# Skip tracking if not working today
+if not st.session_state.daily_checkin["working"]:
+    st.success("🏖️ Enjoy your day off!")
+    st.stop()
 
 # === OCR Upload ===
 st.subheader("📸 Optional: Upload Screenshot")
@@ -171,9 +207,6 @@ if uploaded_image:
         st.text_area("OCR Output", extracted_text, height=150)
 
 # === Manual Entry Form ===
-tz = pytz.timezone("US/Eastern")
-now = datetime.now(tz)
-
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -182,14 +215,14 @@ with st.form("entry_form"):
         miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
 
     # Use OCR time if available, otherwise current time
-    form_default_time = ocr_time_value or now.time()
+    form_default_time = ocr_time_value or datetime.now(tz).time()
     custom_time = st.time_input("Delivery Time", value=form_default_time)
     
     submitted = st.form_submit_button("Add Entry")
 
     if submitted:
         # Use current datetime with custom time
-        timestamp = datetime.combine(now.date(), custom_time)
+        timestamp = datetime.combine(datetime.now(tz).date(), custom_time)
         timestamp = tz.localize(timestamp)
         
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
@@ -222,13 +255,17 @@ if not df.empty:
     df["date"] = df["timestamp"].dt.date
     df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
 
-    # Get today's data
-    today_df = get_today_data(df)
+    # Get date-specific data
+    today_df = get_date_data(df, today)
+    yesterday_df = get_date_data(df, yesterday)
+    
+    # Calculate metrics
     today_earned = today_df['order_total'].sum() if not today_df.empty else 0
     today_miles = today_df['miles'].sum() if not today_df.empty else 0
-    today_goal_remaining = max(TARGET_DAILY - today_earned, 0)
+    yesterday_earned = yesterday_df['order_total'].sum() if not yesterday_df.empty else 0
+    yesterday_miles = yesterday_df['miles'].sum() if not yesterday_df.empty else 0
     
-    # Calculate metrics for all data
+    # More calculations
     daily_totals = df.groupby("date")["order_total"].sum().sort_index().reset_index()
     hourly_rate = df.groupby("hour")["order_total"].mean().sort_index().reset_index()
     
@@ -241,20 +278,45 @@ if not df.empty:
     # === Today's Progress ===
     st.subheader("📊 Today's Progress")
     
-    if not today_df.empty:
-        progress = min(today_earned / TARGET_DAILY, 1)
-        progress_text = f"${today_earned:.2f} / ${TARGET_DAILY} ({progress*100:.0f}%)"
-    else:
-        progress = 0
-        progress_text = "No entries yet - $0.00 / $200.00 (0%)"
+    # Create columns for metrics
+    col1, col2, col3, col4 = st.columns(4)
     
-    st.progress(progress, text=progress_text)
+    with col1:
+        st.metric("Today's Earnings", f"${today_earned:.2f}", 
+                 f"${today_earned - yesterday_earned:.2f} vs yesterday" if yesterday_earned > 0 else "")
     
-    # Today's metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Today's Earnings", f"${today_earned:.2f}", "0 today" if today_earned == 0 else "")
-    col2.metric("Today's Miles", f"{today_miles:.1f}", "0 today" if today_miles == 0 else "")
-    col3.metric("Daily Goal", f"${TARGET_DAILY}", f"${today_goal_remaining:.2f} to go")
+    with col2:
+        st.metric("Today's Miles", f"{today_miles:.1f}",
+                 f"{today_miles - yesterday_miles:.1f} vs yesterday" if yesterday_miles > 0 else "")
+    
+    with col3:
+        st.metric("Daily Goal", f"${current_target}", 
+                 f"${current_target - today_earned:.2f} to go" if today_earned < current_target else "Goal achieved!")
+    
+    with col4:
+        if today_earned > 0:
+            progress = min(today_earned / current_target, 1)
+            st.metric("Progress", f"{progress*100:.0f}%")
+        else:
+            st.metric("Progress", "0%")
+
+    # Progress bar
+    progress = min(today_earned / current_target, 1) if current_target > 0 else 0
+    st.progress(progress, text=f"${today_earned:.2f} / ${current_target}")
+
+    # === Yesterday Comparison ===
+    if yesterday_earned > 0:
+        st.subheader("🔄 Yesterday Comparison")
+        yesterday_comparison = today_earned - yesterday_earned
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
+        
+        with col2:
+            st.metric("Difference", 
+                      f"${yesterday_comparison:.2f}",
+                      "↑ More" if yesterday_comparison > 0 else "↓ Less")
 
     # === Historical Data ===
     st.subheader("📈 Historical Performance")
@@ -299,7 +361,7 @@ if not df.empty:
         )
         # Add target line
         fig.add_hline(
-            y=TARGET_DAILY,
+            y=current_target,
             line_dash="dash",
             line_color="red",
             annotation_text="Daily Target",
@@ -358,16 +420,17 @@ if not df.empty:
     st.subheader("🧠 Smart Suggestion")
     if not hourly_rate.empty:
         # Check if behind today's pace
-        hours_remaining = 24 - datetime.now(pytz.timezone("US/Eastern")).hour
-        needed_per_hour = today_goal_remaining / hours_remaining if hours_remaining > 0 else 0
+        current_hour = datetime.now(tz).hour
+        hours_remaining = 24 - current_hour
+        needed_per_hour = (current_target - today_earned) / hours_remaining if hours_remaining > 0 else 0
         
-        if today_earned < TARGET_DAILY and needed_per_hour > 0:
+        if today_earned < current_target and needed_per_hour > 0:
             st.warning(f"🚨 Behind pace! Need ${needed_per_hour:.2f}/hr to hit goal")
         
         # Original best hour suggestion
-        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["hour"]
+        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]
         best_earning = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["order_total"]
-        st.success(f"**Try working around {best_hour}:00** - Highest average earnings (${best_earning:.2f}/order)")
+        st.success(f"**Try working around {best_hour['hour']}:00** - Highest average earnings (${best_earning:.2f}/order)")
     else:
         st.info("No hourly data yet. Add entries to unlock smart suggestions.")
 else:
