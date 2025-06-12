@@ -1,4 +1,4 @@
-# 🚗 Spark Delivery Tracker (Firebase Edition)
+# 🚗 Spark Delivery Tracker (Firebase Edition with Analytics)
 import streamlit as st
 import pandas as pd
 import re
@@ -139,7 +139,6 @@ if last_ci_date != today:
 # Main tracker interface
 st.title("📦 Spark Delivery Tracker")
 
-# ✅ SAFELY CHECK FOR daily_checkin key
 if st.session_state.get("daily_checkin", {}).get("working") is False:
     st.success("🏝️ Enjoy your day off!")
     st.stop()
@@ -174,27 +173,45 @@ with st.form("entry"):
         st.success("Saved!")
         st.rerun()
 
-# Display metrics/charts
+# Display metrics and analytics
 df_all = load_all_deliveries()
+df_all = df_all[df_all["username"] == user]  # Filter to current user
 if not df_all.empty:
     df_all["date"] = df_all["timestamp"].dt.date
-    today_df = df_all[(df_all["date"] == today) & (df_all["username"] == user)]
+    df_all["hour"] = df_all["timestamp"].dt.hour
+    df_all["day_of_week"] = df_all["timestamp"].dt.day_name()
+    today_df = df_all[df_all["date"] == today]
 else:
     today_df = pd.DataFrame()
 
+# Daily earnings goal
 earned = today_df["order_total"].sum() if not today_df.empty else 0.0
 goal = st.session_state.get("daily_checkin", {}).get("goal", 0)
 perc = min(earned / goal * 100, 100) if goal else 0
 st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
+# Analytics section
+st.subheader("📈 Analytics & Trends")
+
 col1, col2 = st.columns(2)
 with col1:
-    if not today_df.empty:
-        fig = px.histogram(today_df, x="hour", y="order_total", nbins=24, title="Earnings by Hour")
-        st.plotly_chart(fig, use_container_width=True)
+    daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
+    fig = px.line(daily_totals, x="date", y="order_total", title="Cumulative Daily Earnings")
+    st.plotly_chart(fig, use_container_width=True)
+
 with col2:
-    if not today_df.empty:
-        fig = px.scatter(today_df, x="miles", y="order_total", title="Value vs Mileage")
-        st.plotly_chart(fig, use_container_width=True)
+    avg_by_hour = df_all.groupby("hour")["order_total"].mean().reset_index()
+    fig = px.bar(avg_by_hour, x="hour", y="order_total", title="Avg Earnings by Hour")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Day-of-week heatmap
+st.subheader("📅 Earnings by Day of Week")
+dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
+dow_summary["hour"] = dow_summary["hour"].astype(int)
+dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+dow_summary["day_of_week"] = pd.Categorical(dow_summary["day_of_week"], categories=dow_order, ordered=True)
+pivot = dow_summary.pivot(index="hour", columns="day_of_week", values="order_total").fillna(0)
+fig = px.imshow(pivot, labels=dict(x="Day", y="Hour", color="Avg $"), title="Hourly Heatmap by Day")
+st.plotly_chart(fig, use_container_width=True)
 
 st.caption("🏁 Built with Firebase & Streamlit | Data is secure & yours.")
