@@ -98,11 +98,11 @@ tz = pytz.timezone("US/Eastern")
 today = datetime.now(tz).date()
 yesterday = get_yesterday()
 
-if "daily_checkin" not in st.session_state or st.session_state.daily_checkin.get("date") != today:
+# Modify the daily check-in section to this:
+if "last_checkin_date" not in st.session_state or st.session_state.last_checkin_date != get_current_date():
     with st.container(border=True):
         st.header("📅 Daily Check-In")
         
-        # Check if user is working today
         working_today = st.radio(
             "Are you working today?",
             ["Yes", "No"],
@@ -110,21 +110,17 @@ if "daily_checkin" not in st.session_state or st.session_state.daily_checkin.get
         )
         
         if working_today == "Yes":
-            # Get yesterday's data for comparison
-            yesterday_df = get_date_data(df, yesterday)
+            yesterday_df = get_date_data(df, get_yesterday())
             yesterday_earned = yesterday_df['order_total'].sum() if not yesterday_df.empty else 0
             
-            # Set up columns for layout
             col1, col2 = st.columns([2, 3])
             
             with col1:
-                # Show yesterday's performance
                 if yesterday_earned > 0:
                     st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
                 else:
                     st.info("No data for yesterday")
                 
-                # Goal input
                 default_goal = st.session_state.get("last_goal", TARGET_DAILY)
                 today_goal = st.number_input(
                     "Today's Goal ($)",
@@ -134,7 +130,6 @@ if "daily_checkin" not in st.session_state or st.session_state.daily_checkin.get
                 )
             
             with col2:
-                # Notes section with larger input
                 notes = st.text_area(
                     "Today's Notes & Goals",
                     placeholder="Enter your plans, goals, or reminders for today...",
@@ -143,23 +138,32 @@ if "daily_checkin" not in st.session_state or st.session_state.daily_checkin.get
             
             if st.button("Start Tracking", type="primary"):
                 st.session_state.daily_checkin = {
-                    "date": today,
+                    "date": get_current_date(),
                     "working": True,
                     "goal": today_goal,
                     "notes": notes
                 }
                 st.session_state.last_goal = today_goal
+                st.session_state.last_checkin_date = get_current_date()
                 st.rerun()
         else:
             if st.button("Take the day off"):
                 st.session_state.daily_checkin = {
-                    "date": today,
+                    "date": get_current_date(),
                     "working": False,
                     "goal": 0,
                     "notes": "Day off"
                 }
+                st.session_state.last_checkin_date = get_current_date()
                 st.rerun()
-    st.stop()  # Don't proceed until check-in complete
+    st.stop()
+elif "daily_checkin" not in st.session_state:
+    st.session_state.daily_checkin = {
+        "date": get_current_date(),
+        "working": False,
+        "goal": 0,
+        "notes": ""
+    }
 
 # Use today's custom goal if set
 current_target = st.session_state.daily_checkin.get("goal", TARGET_DAILY)
