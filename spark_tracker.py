@@ -46,13 +46,11 @@ except Exception as e:
     st.warning("⚠️ Google Sheets not connected, using local fallback.")
     use_google_sheets = False
 
-# === Helper to ensure Google Sheet has enough rows ===
 def ensure_user_row_exists(sheet, row_num):
     current_rows = len(sheet.get_all_values())
     if row_num > current_rows:
         sheet.add_rows(row_num - current_rows)
 
-# === GOOGLE SHEETS LOGIN ===
 def google_sheets_login():
     st.title("🔐 Spark Tracker Login")
     with st.form("login"):
@@ -65,7 +63,7 @@ def google_sheets_login():
                 if user["username"].strip().lower() == username and user["password"].strip() == password:
                     st.session_state["logged_in"] = True
                     st.session_state["username"] = username
-                    st.session_state["user_row"] = idx + 2  # row number in sheet (header + 1-based)
+                    st.session_state["user_row"] = idx + 2
                     st.session_state["last_checkin_date"] = user.get("last_checkin_date", "")
                     st.rerun()
             st.error("Invalid username or password")
@@ -74,7 +72,6 @@ if "logged_in" not in st.session_state:
     google_sheets_login()
     st.stop()
 
-# === LOAD DATA ===
 def load_data():
     if use_google_sheets:
         try:
@@ -99,7 +96,6 @@ def load_data():
 
 df = load_data()
 
-# === UTILS ===
 def get_yesterday():
     return (datetime.now(tz) - timedelta(days=1)).date()
 
@@ -129,7 +125,7 @@ def parse_order_details(text):
         miles = float(miles_match.group(1))
     return order_total, miles
 
-# === DAILY CHECK-IN (ONE PER USER PER DAY) ===
+# === DAILY CHECK-IN ===
 today = get_current_date()
 yesterday = get_yesterday()
 
@@ -177,9 +173,7 @@ if last_checkin_date != today:
             st.rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
-    # If already checked in today but session restarted, restore a default daily_checkin
     if last_checkin_date == today:
-        # Restore only the basic structure (goal will be remembered from session_state["last_goal"])
         st.session_state["daily_checkin"] = {
             "date": today,
             "working": True,
@@ -193,7 +187,6 @@ elif "daily_checkin" not in st.session_state:
             "goal": 0,
             "notes": ""
         }
-
 
 # === UI ===
 current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
