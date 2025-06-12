@@ -1,4 +1,4 @@
-# 🚗 Spark Delivery Tracker (with login & persistent daily check-in)
+# 🚗 Spark Delivery Tracker
 
 import streamlit as st
 import pandas as pd
