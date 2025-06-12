@@ -11,7 +11,6 @@ from google.oauth2.service_account import Credentials
 import os
 import pytz
 import plotly.express as px
-import time as sleep_time
 
 # === CONFIG ===
 TARGET_DAILY = 200
@@ -48,6 +47,8 @@ except Exception as e:
     use_google_sheets = False
 
 def ensure_user_row_exists(sheet, row_num):
+    if not use_google_sheets:
+        return
     current_rows = len(sheet.get_all_values())
     if row_num > current_rows:
         sheet.add_rows(row_num - current_rows)
@@ -94,29 +95,48 @@ today = get_current_date()
 yesterday = today - timedelta(days=1)
 
 def get_date_data(df, target_date):
+    # Handle empty dataframe case
+    if df.empty:
+        return df
+        
+    # Ensure timestamp is datetime type
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        
+    # Filter by date
     return df[df['timestamp'].dt.date == target_date]
 
-# === LOAD DATA ===
+# === LOAD DATA WITH SAFE DATETIME CONVERSION ===
 def load_data():
     if use_google_sheets:
         try:
             records = worksheet.get_all_values()
             if not records or len(records) < 2:
                 return pd.DataFrame(columns=HEADERS)
+                
             headers = records[0]
             data = records[1:]
             df = pd.DataFrame(data, columns=headers)
+            
+            # Convert columns with error handling
             for col in ["order_total", "miles", "earnings_per_mile"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+                
+            # Safe datetime conversion
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df["hour"] = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
+            
             return df.dropna(subset=["timestamp"])
         except Exception as e:
             st.error(f"Error loading data from Google Sheets: {e}")
             return pd.DataFrame(columns=HEADERS)
     else:
         if os.path.exists(DATA_FILE):
-            return pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
+            df = pd.read_csv(DATA_FILE)
+            # Convert timestamp to datetime if it exists
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            return df
         return pd.DataFrame(columns=HEADERS)
 
 # Load data and store in session state
@@ -139,8 +159,10 @@ if last_checkin_date != today or "daily_checkin" not in st.session_state:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
     if working_today == "Yes":
+        # Safely get yesterday's data
         yesterday_df = get_date_data(df, yesterday)
         earned_yest = yesterday_df["order_total"].sum() if not yesterday_df.empty else 0
+        
         col1, col2 = st.columns([2, 3])
         with col1:
             st.metric("Yesterday's Earnings", f"${earned_yest:.2f}")
@@ -266,8 +288,10 @@ with st.form("entry_form", clear_on_submit=True):
         try:
             if use_google_sheets:
                 worksheet.append_row([str(new_row[k]) for k in HEADERS])
+                # Refresh data after adding
+                st.session_state.df = load_data()
             else:
-                # Update session state df
+                # Create new dataframe with the new row
                 new_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 new_df.to_csv(DATA_FILE, index=False)
                 st.session_state.df = new_df
@@ -285,17 +309,20 @@ if not df.empty:
     # Create a container for metrics that will update automatically
     metrics_container = st.container()
     
+    # Ensure timestamp is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    
     # Process data
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
-    df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
+    df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] and row["miles"] > 0 else 0, axis=1)
 
     today_df = get_date_data(df, today)
     yesterday_df = get_date_data(df, yesterday)
 
-    today_earned = today_df["order_total"].sum()
-    today_miles = today_df["miles"].sum()
+    today_earned = today_df["order_total"].sum() if not today_df.empty else 0
+    today_miles = today_df["miles"].sum() if not today_df.empty else 0
     yesterday_earned = yesterday_df["order_total"].sum() if not yesterday_df.empty else 0
 
     daily_totals = df.groupby("date")["order_total"].sum().reset_index()
@@ -303,8 +330,8 @@ if not df.empty:
 
     total_earned = df["order_total"].sum()
     total_miles = df["miles"].sum()
-    earnings_per_mile = total_earned / total_miles if total_miles else 0
-    avg_per_day = total_earned / df["date"].nunique() if df["date"].nunique() else 0
+    earnings_per_mile = total_earned / total_miles if total_miles > 0 else 0
+    avg_per_day = total_earned / df["date"].nunique() if df["date"].nunique() > 0 else 0
 
     current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
 
