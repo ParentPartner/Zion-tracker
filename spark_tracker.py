@@ -153,8 +153,10 @@ with st.form("entry"):
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
     if st.form_submit_button("Save"):
+        naive_dt = datetime.combine(today, dt)  # naive datetime
+        aware_dt = tz.localize(naive_dt)        # localize to timezone
         entry = {
-            "timestamp": tz.localize(datetime.combine(today, dt)).isoformat(),
+            "timestamp": aware_dt.isoformat(),
             "order_total": ot,
             "miles": ml,
             "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
