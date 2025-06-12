@@ -60,7 +60,6 @@ def google_sheets_login():
                 if user["username"].strip().lower() == username and user["password"].strip() == password:
                     st.session_state["logged_in"] = True
                     st.session_state["username"] = username
-                    st.session_state["last_checkin_user_date"] = {}
                     st.rerun()
             st.error("Invalid username or password")
 
