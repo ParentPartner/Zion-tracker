@@ -149,14 +149,23 @@ if uploaded:
 
 with st.form("entry"):
     st.subheader("Order Entry")
-    default_time = parsed["timestamp"].time() if parsed else datetime.now(tz).time()
-    dt = st.time_input("Time", value=default_time)
+    # Determine defaults - use parsed data if available, otherwise current time/today
+    if parsed:
+        default_time = parsed["timestamp"].time()
+        default_date = parsed["timestamp"].date()
+    else:
+        now = datetime.now(tz)
+        default_time = now.time()
+        default_date = today
+        
+    # Add date input for manual selection
+    selected_date = st.date_input("Date", value=default_date)
+    selected_time = st.time_input("Time", value=default_time)
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
 
     if st.form_submit_button("Save"):
-        selected_time = dt
-        selected_date = parsed["timestamp"].date() if parsed else today
+        # Combine selected date and time
         naive_dt = datetime.combine(selected_date, selected_time)
         aware_dt = tz.localize(naive_dt)
 
