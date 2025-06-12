@@ -161,7 +161,7 @@ if last_checkin_date != today:
             if use_google_sheets:
                 ensure_user_row_exists(user_sheet, st.session_state["user_row"])
                 user_sheet.update(f"C{st.session_state['user_row']}", [[str(today)]])
-            st.experimental_rerun()
+            st.rerun()
     else:
         if st.button("Take the day off"):
             st.session_state["daily_checkin"] = {
@@ -174,7 +174,7 @@ if last_checkin_date != today:
             if use_google_sheets:
                 ensure_user_row_exists(user_sheet, st.session_state["user_row"])
                 user_sheet.update(f"C{st.session_state['user_row']}", [[str(today)]])
-            st.experimental_rerun()
+            st.rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
     st.session_state["daily_checkin"] = {
@@ -245,7 +245,7 @@ with st.form("entry_form"):
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 df.to_csv(DATA_FILE, index=False)
             st.success("✅ Entry saved!")
-            st.experimental_rerun()
+            st.rerun()
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
