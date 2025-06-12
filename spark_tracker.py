@@ -188,7 +188,7 @@ elif "daily_checkin" not in st.session_state:
             "notes": ""
         }
 
-# === UI ===
+# === MAIN UI ===
 current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
 st.title("🚗 Spark Delivery Tracker")
 
@@ -253,7 +253,7 @@ with st.form("entry_form"):
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
-# === METRICS + CHARTS ===
+# === METRICS & SMART CHARTS ===
 if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
