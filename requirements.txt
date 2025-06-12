@@ -8,4 +8,3 @@ oauth2client
 gspread-dataframe
 plotly
 pytz
-sqlite3
