@@ -88,7 +88,8 @@ df = load_data()
 def get_today_data(df):
     tz = pytz.timezone("US/Eastern")
     today = datetime.now(tz).date()
-    return df[df['timestamp'].dt.date == today]
+    today_df = df[df['timestamp'].dt.date == today]
+    return today_df if not today_df.empty else pd.DataFrame(columns=df.columns)
 
 st.title("🚗 Spark Delivery Tracker")
 
@@ -223,8 +224,8 @@ if not df.empty:
 
     # Get today's data
     today_df = get_today_data(df)
-    today_earned = today_df['order_total'].sum()
-    today_miles = today_df['miles'].sum()
+    today_earned = today_df['order_total'].sum() if not today_df.empty else 0
+    today_miles = today_df['miles'].sum() if not today_df.empty else 0
     today_goal_remaining = max(TARGET_DAILY - today_earned, 0)
     
     # Calculate metrics for all data
@@ -240,16 +241,20 @@ if not df.empty:
     # === Today's Progress ===
     st.subheader("📊 Today's Progress")
     
-    # Progress bar with goal
-    progress = min(today_earned / TARGET_DAILY, 1)
-    progress_color = "green" if progress >= 1 else "blue"
-    st.progress(progress, text=f"${today_earned:.2f} / ${TARGET_DAILY} ({progress*100:.0f}%)")
+    if not today_df.empty:
+        progress = min(today_earned / TARGET_DAILY, 1)
+        progress_text = f"${today_earned:.2f} / ${TARGET_DAILY} ({progress*100:.0f}%)"
+    else:
+        progress = 0
+        progress_text = "No entries yet - $0.00 / $200.00 (0%)"
+    
+    st.progress(progress, text=progress_text)
     
     # Today's metrics
     col1, col2, col3 = st.columns(3)
-    col1.metric("Today's Earnings", f"${today_earned:.2f}")
-    col2.metric("Today's Miles", f"{today_miles:.1f}")
-    col3.metric("Remaining to Goal", f"${today_goal_remaining:.2f}")
+    col1.metric("Today's Earnings", f"${today_earned:.2f}", "0 today" if today_earned == 0 else "")
+    col2.metric("Today's Miles", f"{today_miles:.1f}", "0 today" if today_miles == 0 else "")
+    col3.metric("Daily Goal", f"${TARGET_DAILY}", f"${today_goal_remaining:.2f} to go")
 
     # === Historical Data ===
     st.subheader("📈 Historical Performance")
