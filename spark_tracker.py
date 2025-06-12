@@ -9,7 +9,6 @@ from google.oauth2.service_account import Credentials
 import os
 import pytz
 import plotly.express as px
-import plotly.graph_objects as go
 
 # === Config ===
 TARGET_DAILY = 200
@@ -48,7 +47,7 @@ def login():
         if submitted:
             if username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
                 st.session_state["logged_in"] = True
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("Invalid login")
 
@@ -83,11 +82,11 @@ df = load_data()
 
 # === Helper Functions ===
 tz = pytz.timezone("US/Eastern")
-def get_yesterday():
-    return (datetime.now(tz) - timedelta(days=1)).date()
-
 def get_current_date():
     return datetime.now(tz).date()
+
+def get_yesterday():
+    return (datetime.now(tz) - timedelta(days=1)).date()
 
 def get_date_data(df, target_date):
     return df[df['timestamp'].dt.date == target_date]
@@ -102,20 +101,33 @@ def extract_text_and_time(image_bytes):
     return text, ocr_time
 
 def parse_order_details(text):
-    # Match total and miles from OCR text
-    total_match = re.findall(r"\$\s?(\d+(?:\.\d{1,2})?)", text)
-    miles_match = re.findall(r"(\d+(?:\.\d{1,2})?)\s?mi", text, re.IGNORECASE)
+    text_lower = text.lower()
+    order_total = 0.0
+    miles = 0.0
 
-    order_total = float(total_match[0]) if total_match else 0.0
-    miles = float(miles_match[0]) if miles_match else 0.0
+    # Look for $XX.XX estimate pattern first
+    estimate_pattern = re.compile(r"\$?(\d+(?:\.\d{1,2})?)\s*estimate")
+    estimate_match = estimate_pattern.search(text_lower)
+    if estimate_match:
+        order_total = float(estimate_match.group(1))
+    else:
+        # fallback: any dollar amount in text
+        total_matches = re.findall(r"\$?(\d+(?:\.\d{1,2})?)", text_lower)
+        if total_matches:
+            order_total = float(total_matches[-1])
+
+    miles_match = re.search(r"(\d+(?:\.\d{1,2})?)\s*mi", text_lower)
+    if miles_match:
+        miles = float(miles_match.group(1))
+
     return order_total, miles
 
 # === Daily Check-In ===
 today = get_current_date()
 yesterday = get_yesterday()
 
-if "last_checkin_date" not in st.session_state or st.session_state.last_checkin_date != today:
-    with st.container(border=True):
+if "last_checkin_date" not in st.session_state or st.session_state["last_checkin_date"] != today:
+    with st.container():
         st.header("📅 Daily Check-In")
         working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
 
@@ -137,44 +149,46 @@ if "last_checkin_date" not in st.session_state or st.session_state.last_checkin_
                 notes = st.text_area("Today's Notes & Goals", placeholder="Plans, goals, reminders...", height=100)
 
             if st.button("Start Tracking", type="primary"):
-                st.session_state.daily_checkin = {
+                st.session_state["daily_checkin"] = {
                     "date": today,
                     "working": True,
                     "goal": today_goal,
                     "notes": notes
                 }
-                st.session_state.last_goal = today_goal
-                st.session_state.last_checkin_date = today
-                st.rerun()
+                st.session_state["last_goal"] = today_goal
+                st.session_state["last_checkin_date"] = today
+                st.experimental_rerun()
+
         else:
             if st.button("Take the day off"):
-                st.session_state.daily_checkin = {
+                st.session_state["daily_checkin"] = {
                     "date": today,
                     "working": False,
                     "goal": 0,
                     "notes": "Day off"
                 }
-                st.session_state.last_checkin_date = today
-                st.rerun()
+                st.session_state["last_checkin_date"] = today
+                st.experimental_rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
-    st.session_state.daily_checkin = {
+    # Initialize with a default day off if somehow missing
+    st.session_state["daily_checkin"] = {
         "date": today,
         "working": False,
         "goal": 0,
         "notes": ""
     }
 
-current_target = st.session_state.daily_checkin.get("goal", TARGET_DAILY)
+current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
 st.title("🚗 Spark Delivery Tracker")
 
 # === Notes Display ===
-if st.session_state.daily_checkin.get("notes"):
-    with st.container(border=True):
+if st.session_state["daily_checkin"].get("notes"):
+    with st.container():
         st.subheader("📝 Today's Notes")
-        st.write(st.session_state.daily_checkin["notes"])
+        st.write(st.session_state["daily_checkin"]["notes"])
 
-if not st.session_state.daily_checkin["working"]:
+if not st.session_state["daily_checkin"]["working"]:
     st.success("🏖️ Enjoy your day off!")
     st.stop()
 
@@ -196,8 +210,8 @@ if uploaded_image:
                 pass
 
     st.write("🧾 **Extracted Info**")
-    st.write(f"**Order Total:** {total_auto or '❌ Not found'}")
-    st.write(f"**Miles:** {miles_auto or '❌ Not found'}")
+    st.write(f"**Order Total:** {total_auto if total_auto > 0 else '❌ Not found'}")
+    st.write(f"**Miles:** {miles_auto if miles_auto > 0 else '❌ Not found'}")
     st.write(f"**Time (from screenshot):** {ocr_time or '❌ Not found'}")
     with st.expander("🧪 Show Raw OCR Text"):
         st.text_area("OCR Output", extracted_text, height=150)
@@ -233,7 +247,7 @@ with st.form("entry_form"):
                 df.to_csv(DATA_FILE, index=False)
 
             st.success("✅ Entry saved!")
-            st.rerun()
+            st.experimental_rerun()
         except Exception as e:
             st.error(f"❌ Error saving entry: {e}")
 
