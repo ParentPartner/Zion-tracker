@@ -8,3 +8,4 @@ oauth2client
 gspread-dataframe
 plotly
 pytz
+firebase-admin
