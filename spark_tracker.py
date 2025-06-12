@@ -138,11 +138,13 @@ if last_ci_date != today:
 
 # Main tracker interface
 st.title("📦 Spark Delivery Tracker")
-if st.session_state["daily_checkin"].get("working") is False:
+
+# ✅ SAFELY CHECK FOR daily_checkin key
+if st.session_state.get("daily_checkin", {}).get("working") is False:
     st.success("🏝️ Enjoy your day off!")
     st.stop()
 else:
-    st.markdown(st.session_state["daily_checkin"].get("notes", ""))
+    st.markdown(st.session_state.get("daily_checkin", {}).get("notes", ""))
 
 # OCR + Manual entry
 uploaded = st.file_uploader("Upload screenshot (optional)", type=["png","jpg","jpeg"])
