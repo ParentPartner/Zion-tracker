@@ -160,7 +160,11 @@ with st.form("entry"):
         
     # Add date input for manual selection
     selected_date = st.date_input("Date", value=default_date)
-    selected_time = st.time_input("Time", value=default_time)
+    
+    # Create a clean default time without seconds/microseconds
+    clean_default = time(default_time.hour, default_time.minute)
+    selected_time = st.time_input("Time", value=clean_default)
+    
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
 
@@ -179,7 +183,7 @@ with st.form("entry"):
         }
 
         add_entry_to_firestore(entry)
-        st.success("Saved!")
+        st.success(f"Saved entry at {aware_dt.strftime('%I:%M %p')}!")
         st.rerun()
 
 # Load + Filter
