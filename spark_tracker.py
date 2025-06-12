@@ -1,4 +1,5 @@
-# 🚗 Spark Delivery Tracker (Firebase Edition with Analytics)
+# 🚗 Spark Delivery Tracker (Firebase Edition with 12-Hour Format & Enhanced Visuals)
+
 import streamlit as st
 import pandas as pd
 import re
@@ -14,7 +15,6 @@ from firebase_admin import credentials, firestore
 tz = pytz.timezone("US/Eastern")
 TARGET_DAILY = 200
 
-# Initialize Firebase
 if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase"]))
     firebase_admin.initialize_app(cred)
@@ -36,8 +36,7 @@ def update_last_checkin(username, date_str):
     db.collection("users").document(username).update({"last_checkin_date": date_str})
 
 def init_user(username, password="password"):
-    user = get_user(username)
-    if not user:
+    if not get_user(username):
         db.collection("users").document(username).set({
             "password": password,
             "last_checkin_date": ""
@@ -77,14 +76,12 @@ def parse_screenshot_text(text_list):
     return ts, ot, ml
 
 # === STREAMLIT UI ===
-
-# Secure login
 if "logged_in" not in st.session_state:
     st.title("🔐 Spark Tracker Login")
     username = st.text_input("Username").strip().lower()
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        init_user(username)  # ensure user exists (default password)
+        init_user(username)
         if validate_login(username, password):
             st.session_state.update({
                 "logged_in": True,
@@ -100,14 +97,9 @@ user = st.session_state.username
 today = get_current_date()
 yesterday = today - timedelta(days=1)
 
-# Daily check-in prompt
+# Daily Check-in
 last_ci = st.session_state.get("last_checkin_date", "")
-last_ci_date = None
-if last_ci:
-    try:
-        last_ci_date = datetime.strptime(last_ci, "%Y-%m-%d").date()
-    except:
-        pass
+last_ci_date = datetime.strptime(last_ci, "%Y-%m-%d").date() if last_ci else None
 
 if last_ci_date != today:
     st.header("📅 Daily Check‑In")
@@ -136,24 +128,23 @@ if last_ci_date != today:
             st.rerun()
     st.stop()
 
-# Main tracker interface
+# Main Interface
 st.title("📦 Spark Delivery Tracker")
-
 if st.session_state.get("daily_checkin", {}).get("working") is False:
     st.success("🏝️ Enjoy your day off!")
     st.stop()
 else:
     st.markdown(st.session_state.get("daily_checkin", {}).get("notes", ""))
 
-# OCR + Manual entry
-uploaded = st.file_uploader("Upload screenshot (optional)", type=["png","jpg","jpeg"])
+# OCR + Entry
+uploaded = st.file_uploader("Upload screenshot (optional)", type=["png", "jpg", "jpeg"])
 parsed = None
 if uploaded:
     with st.spinner("Analyzing…"):
         text_list = extract_text_from_image(uploaded)
         ts, ot, ml = parse_screenshot_text(text_list)
         parsed = {"timestamp": ts, "order_total": ot, "miles": ml}
-        st.success(f"OCR: ${ot:.2f} | {ml:.1f} mi @ {ts.strftime('%H:%M')}")
+        st.success(f"OCR: ${ot:.2f} | {ml:.1f} mi @ {ts.strftime('%I:%M %p')}")
 
 with st.form("entry"):
     st.subheader("Order Entry")
@@ -173,83 +164,79 @@ with st.form("entry"):
         st.success("Saved!")
         st.rerun()
 
-# Display metrics and analytics
+# Load + Filter
 df_all = load_all_deliveries()
-df_all = df_all[df_all["username"] == user]  # Filter to current user
+df_all = df_all[df_all["username"] == user]
 if not df_all.empty:
     df_all["date"] = df_all["timestamp"].dt.date
     df_all["hour"] = df_all["timestamp"].dt.hour
+    df_all["hour_12"] = df_all["timestamp"].dt.strftime("%I %p")
     df_all["day_of_week"] = df_all["timestamp"].dt.day_name()
     today_df = df_all[df_all["date"] == today]
 else:
     today_df = pd.DataFrame()
 
-# Daily earnings goal
+# Earnings Goal
 earned = today_df["order_total"].sum() if not today_df.empty else 0.0
 goal = st.session_state.get("daily_checkin", {}).get("goal", 0)
 perc = min(earned / goal * 100, 100) if goal else 0
 st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
-# Analytics section
+# === Analytics ===
 st.subheader("📈 Analytics & Trends")
-
 col1, col2 = st.columns(2)
+
 with col1:
     daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
-    fig = px.line(daily_totals, x="date", y="order_total", title="Cumulative Daily Earnings")
+    fig = px.line(daily_totals, x="date", y="order_total", title="📅 Daily Earnings", markers=True)
+    fig.update_layout(xaxis_title="Date", yaxis_title="Total Earned ($)", template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    avg_by_hour = df_all.groupby("hour")["order_total"].mean().reset_index()
-    fig = px.bar(avg_by_hour, x="hour", y="order_total", title="Avg Earnings by Hour")
+    avg_by_hour = df_all.groupby("hour_12")["order_total"].mean().reset_index()
+    fig = px.bar(avg_by_hour, x="hour_12", y="order_total", title="⏰ Avg Earnings by Hour",
+                 labels={"hour_12": "Hour", "order_total": "Avg $"})
+    fig.update_layout(xaxis_categoryorder="array", xaxis_categoryarray=avg_by_hour["hour_12"],
+                      template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-# === AI Suggestions Engine ===
+# === Smart Suggestions ===
 st.header("🤖 Smart Suggestions")
-
-user_df = df_all[df_all["username"] == user].copy()
+user_df = df_all.copy()
 
 if not user_df.empty:
-    # Earnings per hour
-    user_df["hour"] = user_df["timestamp"].dt.hour
-    hour_avg = user_df.groupby("hour")["order_total"].mean().sort_values(ascending=False)
+    hour_avg = user_df.groupby("hour")["order_total"].mean()
     best_hour = hour_avg.idxmax()
     best_hour_val = hour_avg.max()
 
-    # Earnings per weekday
-    user_df["weekday"] = user_df["timestamp"].dt.day_name()
-    weekday_avg = user_df.groupby("weekday")["order_total"].mean().sort_values(ascending=False)
+    weekday_avg = user_df.groupby("day_of_week")["order_total"].mean()
     best_day = weekday_avg.idxmax()
     best_day_val = weekday_avg.max()
 
-    # Earnings per mile
     user_df["efficiency"] = user_df["order_total"] / user_df["miles"].replace(0, 0.01)
     best_eff = user_df["efficiency"].median()
 
-    # Generate natural language suggestion
     st.markdown(f"""
-    ✅ Based on your past deliveries:
-    
-    - **📆 Best day:** `{best_day}` – you average **${best_day_val:.2f}** per order.
-    - **⏰ Best hour:** `{best_hour}:00` – you average **${best_hour_val:.2f}** per order.
-    - **🚗 Ideal Efficiency:** Aim for at least **${best_eff:.2f}/mile**.
+    ✅ Based on your delivery history:
+
+    - **📆 Best day:** `{best_day}` – avg **${best_day_val:.2f}**/order  
+    - **⏰ Best hour:** `{best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'}` – avg **${best_hour_val:.2f}**  
+    - **🚗 Efficiency Tip:** Aim for **${best_eff:.2f}/mile**
     """)
-    
+
     if best_day_val > 25 and best_hour_val > 20:
-        st.success("📈 Tip: Try scheduling deliveries on "
-                   f"**{best_day} between {best_hour}:00 and {best_hour+1}:00** — your top earning slot!")
-
+        st.success(f"🔥 Tip: Deliver on **{best_day} between {best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'} and {(best_hour + 1) % 12 or 12}:00**")
 else:
-    st.info("Do a few deliveries to unlock smart suggestions.")
+    st.info("Do a few deliveries to unlock smart insights.")
 
-# Day-of-week heatmap
-st.subheader("📅 Earnings by Day of Week")
+# === Heatmap ===
+st.subheader("📅 Hourly Earnings by Weekday")
 dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
 dow_summary["hour"] = dow_summary["hour"].astype(int)
 dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 dow_summary["day_of_week"] = pd.Categorical(dow_summary["day_of_week"], categories=dow_order, ordered=True)
 pivot = dow_summary.pivot(index="hour", columns="day_of_week", values="order_total").fillna(0)
-fig = px.imshow(pivot, labels=dict(x="Day", y="Hour", color="Avg $"), title="Hourly Heatmap by Day")
+fig = px.imshow(pivot, labels=dict(x="Day", y="Hour (24h)", color="Avg $"), title="📊 Heatmap of Avg Earnings")
 st.plotly_chart(fig, use_container_width=True)
 
-st.caption("🏁 Built with Firebase & Streamlit | Data is secure & yours.")
+st.caption("🏁 Built with Firebase & Streamlit | Data stays 100% yours.")
