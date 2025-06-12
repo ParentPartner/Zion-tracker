@@ -182,6 +182,38 @@ goal = st.session_state.get("daily_checkin", {}).get("goal", 0)
 perc = min(earned / goal * 100, 100) if goal else 0
 st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
+# === Delete Entries ===
+st.subheader("🗑️ Delete Entries")
+
+# Select date to view entries
+selected_date = st.date_input("Select date to manage entries", value=today)
+entries_to_show = df_all[df_all["date"] == selected_date]
+
+if not entries_to_show.empty:
+    for i, row in entries_to_show.iterrows():
+        col1, col2, col3 = st.columns([3, 2, 1])
+        with col1:
+            st.write(f"🕒 {row['timestamp'].strftime('%I:%M %p')} | 💵 ${row['order_total']:.2f} | 🚗 {row['miles']} mi")
+        with col2:
+            st.write(f"EPM: ${row['earnings_per_mile']:.2f}")
+        with col3:
+            if st.button("🗑️ Delete", key=f"del_{i}"):
+                # Find and delete this entry from Firestore
+                all_docs = list(db.collection("deliveries").stream())
+                for doc in all_docs:
+                    data = doc.to_dict()
+                    if (
+                        data.get("username") == user and
+                        abs(pd.to_datetime(data.get("timestamp")) - row["timestamp"]) < timedelta(seconds=5) and
+                        float(data.get("order_total")) == row["order_total"]
+                    ):
+                        db.collection("deliveries").document(doc.id).delete()
+                        st.success("Entry deleted!")
+                        st.rerun()
+else:
+    st.info("No entries found for this date.")
+
+
 # === Analytics ===
 st.subheader("📈 Analytics & Trends")
 col1, col2 = st.columns(2)
