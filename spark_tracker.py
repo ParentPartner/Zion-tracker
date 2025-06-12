@@ -91,7 +91,7 @@ if "logged_in" not in st.session_state:
                 "username": username,
                 "last_checkin_date": get_user(username).get("last_checkin_date", "")
             })
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid credentials")
     st.stop()
@@ -116,9 +116,7 @@ if last_ci_date != today:
         df_all = load_all_deliveries()
         yesterday_sum = 0
         if not df_all.empty:
-            yesterday_sum = df_all[
-                (df_all["timestamp"].dt.date == yesterday) & (df_all["username"] == user)
-            ]["order_total"].sum()
+            yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
         col1, col2 = st.columns([2, 3])
         with col1:
             st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
@@ -129,13 +127,13 @@ if last_ci_date != today:
             st.session_state["daily_checkin"] = {"working": True, "goal": goal, "notes": notes}
             st.session_state["last_checkin_date"] = today.isoformat()
             update_last_checkin(user, today.isoformat())
-            st.experimental_rerun()
+            st.rerun()
     else:
         if st.button("Take the day off"):
             st.session_state["daily_checkin"] = {"working": False, "goal": 0, "notes": "Day off"}
             st.session_state["last_checkin_date"] = today.isoformat()
             update_last_checkin(user, today.isoformat())
-            st.experimental_rerun()
+            st.rerun()
     st.stop()
 
 # Main tracker interface
@@ -172,46 +170,29 @@ with st.form("entry"):
         }
         add_entry_to_firestore(entry)
         st.success("Saved!")
-        st.experimental_rerun()
+        st.rerun()
 
-# Display metrics/charts for logged-in user
+# Display metrics/charts
 df_all = load_all_deliveries()
-
 if not df_all.empty:
-    df_all = df_all[df_all["username"] == user]
     df_all["date"] = df_all["timestamp"].dt.date
-    df_all["hour"] = df_all["timestamp"].dt.hour
-
-    today_df = df_all[df_all["date"] == today]
-
-    # Earnings totals
-    earned_today = today_df["order_total"].sum()
-    earned_total = df_all["order_total"].sum()
-
-    goal = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
-    perc = min(earned_today / goal * 100, 100) if goal else 0
-
-    st.metric("Today's Earnings", f"${earned_today:.2f}", f"{perc:.0f}% of goal")
-    st.metric("Total Earnings (All Time)", f"${earned_total:.2f}")
-
-    # Historical daily earnings chart
-    daily_earnings = df_all.groupby("date")["order_total"].sum().reset_index()
-    st.subheader("Earnings Over Time")
-    fig1 = px.line(daily_earnings, x="date", y="order_total", title="Daily Earnings Over Time")
-    st.plotly_chart(fig1, use_container_width=True)
-
-    # Earnings by hour today
-    if not today_df.empty:
-        st.subheader("Earnings by Hour (Today)")
-        hourly_earnings = today_df.groupby("hour")["order_total"].sum().reset_index()
-        fig2 = px.bar(hourly_earnings, x="hour", y="order_total", title="Hourly Earnings Today")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    # Earnings vs mileage scatter
-    st.subheader("Earnings vs Mileage")
-    fig3 = px.scatter(df_all, x="miles", y="order_total", title="Value vs Mileage")
-    st.plotly_chart(fig3, use_container_width=True)
+    today_df = df_all[(df_all["date"] == today) & (df_all["username"] == user)]
 else:
-    st.info("No delivery data yet. Start entering orders!")
+    today_df = pd.DataFrame()
+
+earned = today_df["order_total"].sum() if not today_df.empty else 0.0
+goal = st.session_state["daily_checkin"]["goal"]
+perc = min(earned / goal * 100, 100) if goal else 0
+st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
+
+col1, col2 = st.columns(2)
+with col1:
+    if not today_df.empty:
+        fig = px.histogram(today_df, x="hour", y="order_total", nbins=24, title="Earnings by Hour")
+        st.plotly_chart(fig, use_container_width=True)
+with col2:
+    if not today_df.empty:
+        fig = px.scatter(today_df, x="miles", y="order_total", title="Value vs Mileage")
+        st.plotly_chart(fig, use_container_width=True)
 
 st.caption("🏁 Built with Firebase & Streamlit | Data is secure & yours.")
