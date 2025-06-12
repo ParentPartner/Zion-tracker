@@ -1,4 +1,4 @@
-# 🚗 Spark Delivery Tracker (with Google Sheets login)
+# 🚗 Spark Delivery Tracker (with Google Sheets login and persistent daily check-in)
 
 import streamlit as st
 import pandas as pd
@@ -19,6 +19,11 @@ GOOGLE_SHEET_NAME = "spark_orders"
 DATA_FILE = "spark_orders.csv"
 HEADERS = ["timestamp", "order_total", "miles", "earnings_per_mile", "hour"]
 
+# === TIMEZONE ===
+tz = pytz.timezone("US/Eastern")
+def get_current_date():
+    return datetime.now(tz).date()
+
 # === GOOGLE SHEETS AUTH ===
 try:
     creds = Credentials.from_service_account_info(
@@ -30,22 +35,16 @@ try:
     worksheet = workbook.sheet1
     if not worksheet.row_values(1):
         worksheet.insert_row(HEADERS, index=1)
-    user_sheet = None
     try:
         user_sheet = workbook.worksheet("users")
     except:
-        user_sheet = workbook.add_worksheet(title="users", rows=10, cols=2)
-        user_sheet.update("A1:B1", [["username", "password"]])
+        user_sheet = workbook.add_worksheet(title="users", rows=100, cols=3)
+        user_sheet.update("A1:C1", [["username", "password", "last_checkin_date"]])
     use_google_sheets = True
 except Exception as e:
     st.error(f"Google Sheets error: {e}")
     st.warning("⚠️ Google Sheets not connected, using local fallback.")
     use_google_sheets = False
-
-# === TIMEZONE ===
-tz = pytz.timezone("US/Eastern")
-def get_current_date():
-    return datetime.now(tz).date()
 
 # === GOOGLE SHEETS LOGIN ===
 def google_sheets_login():
@@ -56,10 +55,12 @@ def google_sheets_login():
         submitted = st.form_submit_button("Login")
         if submitted:
             users = user_sheet.get_all_records()
-            for user in users:
+            for idx, user in enumerate(users):
                 if user["username"].strip().lower() == username and user["password"].strip() == password:
                     st.session_state["logged_in"] = True
                     st.session_state["username"] = username
+                    st.session_state["user_row"] = idx + 2  # row number in sheet
+                    st.session_state["last_checkin_date"] = user.get("last_checkin_date", "")
                     st.rerun()
             st.error("Invalid username or password")
 
@@ -121,12 +122,13 @@ def parse_order_details(text):
         miles = float(miles_match.group(1))
     return order_total, miles
 
-# === DAILY CHECK-IN (ONCE PER DAY PER USER) ===
+# === DAILY CHECK-IN (ONE PER USER PER DAY) ===
 today = get_current_date()
 yesterday = get_yesterday()
-checkin_key = f"{st.session_state['username']}_last_checkin_date"
 
-if st.session_state.get(checkin_key) != today:
+last_checkin_str = st.session_state.get("last_checkin_date", "")
+last_checkin_date = datetime.strptime(last_checkin_str, "%Y-%m-%d").date() if last_checkin_str else None
+if last_checkin_date != today:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
     if working_today == "Yes":
@@ -146,8 +148,10 @@ if st.session_state.get(checkin_key) != today:
                 "goal": today_goal,
                 "notes": notes
             }
-            st.session_state[checkin_key] = today
             st.session_state["last_goal"] = today_goal
+            st.session_state["last_checkin_date"] = str(today)
+            if use_google_sheets:
+                user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
             st.rerun()
     else:
         if st.button("Take the day off"):
@@ -157,7 +161,9 @@ if st.session_state.get(checkin_key) != today:
                 "goal": 0,
                 "notes": "Day off"
             }
-            st.session_state[checkin_key] = today
+            st.session_state["last_checkin_date"] = str(today)
+            if use_google_sheets:
+                user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
             st.rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
