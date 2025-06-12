@@ -16,7 +16,7 @@ TARGET_DAILY = 200
 
 # Initialize Firebase
 if not firebase_admin._apps:
-    cred = credentials.Certificate(st.secrets["firebase"])
+    cred = credentials.Certificate(dict(st.secrets["firebase"]))
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -51,7 +51,7 @@ def load_all_deliveries():
     for doc in db.collection("deliveries").stream():
         data.append(doc.to_dict())
     df = pd.DataFrame(data)
-    if "timestamp" in df.columns:
+    if not df.empty and "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
     return df
 
@@ -73,7 +73,7 @@ def parse_screenshot_text(text_list):
     ts = datetime.now(tz)
     if time_match:
         h, m = map(int, time_match.group(1).split(":"))
-        ts = ts.replace(hour=h, minute=m)
+        ts = ts.replace(hour=h, minute=m, second=0, microsecond=0)
     return ts, ot, ml
 
 # === STREAMLIT UI ===
@@ -84,7 +84,7 @@ if "logged_in" not in st.session_state:
     username = st.text_input("Username").strip().lower()
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        init_user(username)  # ensure exists (default "password")
+        init_user(username)  # ensure user exists (default password)
         if validate_login(username, password):
             st.session_state.update({
                 "logged_in": True,
@@ -114,7 +114,9 @@ if last_ci_date != today:
     working = st.radio("Working today?", ("Yes", "No"))
     if working == "Yes":
         df_all = load_all_deliveries()
-        yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
+        yesterday_sum = 0
+        if not df_all.empty:
+            yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
         col1, col2 = st.columns([2, 3])
         with col1:
             st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
@@ -143,7 +145,7 @@ else:
     st.markdown(st.session_state["daily_checkin"].get("notes", ""))
 
 # OCR + Manual entry
-uploaded = st.file_uploader("Upload screenshot (optional)", type=["png","jpg"])
+uploaded = st.file_uploader("Upload screenshot (optional)", type=["png","jpg","jpeg"])
 parsed = None
 if uploaded:
     with st.spinner("Analyzing…"):
@@ -163,7 +165,8 @@ with st.form("entry"):
             "order_total": ot,
             "miles": ml,
             "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
-            "hour": dt.hour
+            "hour": dt.hour,
+            "username": user
         }
         add_entry_to_firestore(entry)
         st.success("Saved!")
@@ -171,21 +174,25 @@ with st.form("entry"):
 
 # Display metrics/charts
 df_all = load_all_deliveries()
-df_all["date"] = df_all["timestamp"].dt.date
+if not df_all.empty:
+    df_all["date"] = df_all["timestamp"].dt.date
+    today_df = df_all[(df_all["date"] == today) & (df_all["username"] == user)]
+else:
+    today_df = pd.DataFrame()
 
-today_df = df_all[df_all["date"] == today]
-
-earned = today_df["order_total"].sum()
+earned = today_df["order_total"].sum() if not today_df.empty else 0.0
 goal = st.session_state["daily_checkin"]["goal"]
 perc = min(earned / goal * 100, 100) if goal else 0
 st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
 col1, col2 = st.columns(2)
 with col1:
-    fig = px.histogram(today_df, x="hour", y="order_total", nbins=24, title="Earnings by Hour")
-    st.plotly_chart(fig, use_container_width=True)
+    if not today_df.empty:
+        fig = px.histogram(today_df, x="hour", y="order_total", nbins=24, title="Earnings by Hour")
+        st.plotly_chart(fig, use_container_width=True)
 with col2:
-    fig = px.scatter(today_df, x="miles", y="order_total", title="Value vs Mileage")
-    st.plotly_chart(fig, use_container_width=True)
+    if not today_df.empty:
+        fig = px.scatter(today_df, x="miles", y="order_total", title="Value vs Mileage")
+        st.plotly_chart(fig, use_container_width=True)
 
 st.caption("🏁 Built with Firebase & Streamlit | Data is secure & yours.")
