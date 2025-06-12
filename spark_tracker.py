@@ -37,7 +37,7 @@ try:
         worksheet.insert_row(HEADERS, index=1)
     try:
         user_sheet = workbook.worksheet("users")
-    except:
+    except gspread.WorksheetNotFound:
         user_sheet = workbook.add_worksheet(title="users", rows=100, cols=3)
         user_sheet.update("A1:C1", [["username", "password", "last_checkin_date"]])
     use_google_sheets = True
@@ -45,6 +45,12 @@ except Exception as e:
     st.error(f"Google Sheets error: {e}")
     st.warning("⚠️ Google Sheets not connected, using local fallback.")
     use_google_sheets = False
+
+# === Helper to ensure Google Sheet has enough rows ===
+def ensure_user_row_exists(sheet, row_num):
+    current_rows = len(sheet.get_all_values())
+    if row_num > current_rows:
+        sheet.add_rows(row_num - current_rows)
 
 # === GOOGLE SHEETS LOGIN ===
 def google_sheets_login():
@@ -59,7 +65,7 @@ def google_sheets_login():
                 if user["username"].strip().lower() == username and user["password"].strip() == password:
                     st.session_state["logged_in"] = True
                     st.session_state["username"] = username
-                    st.session_state["user_row"] = idx + 2  # row number in sheet
+                    st.session_state["user_row"] = idx + 2  # row number in sheet (header + 1-based)
                     st.session_state["last_checkin_date"] = user.get("last_checkin_date", "")
                     st.rerun()
             st.error("Invalid username or password")
@@ -83,7 +89,8 @@ def load_data():
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df["hour"] = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
             return df.dropna(subset=["timestamp"])
-        except:
+        except Exception as e:
+            st.error(f"Error loading data from Google Sheets: {e}")
             return pd.DataFrame(columns=HEADERS)
     else:
         if os.path.exists(DATA_FILE):
@@ -128,6 +135,7 @@ yesterday = get_yesterday()
 
 last_checkin_str = st.session_state.get("last_checkin_date", "")
 last_checkin_date = datetime.strptime(last_checkin_str, "%Y-%m-%d").date() if last_checkin_str else None
+
 if last_checkin_date != today:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
@@ -151,8 +159,9 @@ if last_checkin_date != today:
             st.session_state["last_goal"] = today_goal
             st.session_state["last_checkin_date"] = str(today)
             if use_google_sheets:
+                ensure_user_row_exists(user_sheet, st.session_state["user_row"])
                 user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
-            st.rerun()
+            st.experimental_rerun()
     else:
         if st.button("Take the day off"):
             st.session_state["daily_checkin"] = {
@@ -163,8 +172,9 @@ if last_checkin_date != today:
             }
             st.session_state["last_checkin_date"] = str(today)
             if use_google_sheets:
+                ensure_user_row_exists(user_sheet, st.session_state["user_row"])
                 user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
-            st.rerun()
+            st.experimental_rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
     st.session_state["daily_checkin"] = {
@@ -235,7 +245,7 @@ with st.form("entry_form"):
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 df.to_csv(DATA_FILE, index=False)
             st.success("✅ Entry saved!")
-            st.rerun()
+            st.experimental_rerun()
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
