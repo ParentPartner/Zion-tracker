@@ -84,6 +84,12 @@ def load_data():
 
 df = load_data()
 
+# Helper function to get today's data
+def get_today_data(df):
+    tz = pytz.timezone("US/Eastern")
+    today = datetime.now(tz).date()
+    return df[df['timestamp'].dt.date == today]
+
 st.title("🚗 Spark Delivery Tracker")
 
 # === OCR Functions ===
@@ -215,7 +221,13 @@ if not df.empty:
     df["date"] = df["timestamp"].dt.date
     df["earnings_per_mile"] = df.apply(lambda row: row["order_total"] / row["miles"] if row["miles"] else 0, axis=1)
 
-    # Calculate metrics
+    # Get today's data
+    today_df = get_today_data(df)
+    today_earned = today_df['order_total'].sum()
+    today_miles = today_df['miles'].sum()
+    today_goal_remaining = max(TARGET_DAILY - today_earned, 0)
+    
+    # Calculate metrics for all data
     daily_totals = df.groupby("date")["order_total"].sum().sort_index().reset_index()
     hourly_rate = df.groupby("hour")["order_total"].mean().sort_index().reset_index()
     
@@ -225,10 +237,24 @@ if not df.empty:
     days_logged = df["date"].nunique()
     avg_per_day = total_earned / days_logged if days_logged else 0
 
-    last_day_total = daily_totals.iloc[-1]["order_total"] if not daily_totals.empty else 0
-    daily_goal_remaining = max(TARGET_DAILY - last_day_total, 0)
+    # === Today's Progress ===
+    st.subheader("📊 Today's Progress")
+    
+    # Progress bar with goal
+    progress = min(today_earned / TARGET_DAILY, 1)
+    progress_color = "green" if progress >= 1 else "blue"
+    st.progress(progress, text=f"${today_earned:.2f} / ${TARGET_DAILY} ({progress*100:.0f}%)")
+    
+    # Today's metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Today's Earnings", f"${today_earned:.2f}")
+    col2.metric("Today's Miles", f"{today_miles:.1f}")
+    col3.metric("Remaining to Goal", f"${today_goal_remaining:.2f}")
 
-    # Display metrics
+    # === Historical Data ===
+    st.subheader("📈 Historical Performance")
+    
+    # Overall metrics
     col1, col2 = st.columns(2)
     col1.metric("Total Earned", f"${total_earned:.2f}")
     col2.metric("Total Miles", f"{total_miles:.1f}")
@@ -237,10 +263,7 @@ if not df.empty:
     col3.metric("Avg $ / Mile", f"${earnings_per_mile:.2f}")
     col4.metric("Avg Per Day", f"${avg_per_day:.2f}")
 
-    st.markdown(f"🧾 **Today's Goal Left:** ${daily_goal_remaining:.2f}")
-
     # === Enhanced Daily Earnings Chart ===
-    st.subheader("📈 Daily Earnings")
     if not daily_totals.empty:
         fig = px.bar(
             daily_totals,
@@ -326,39 +349,17 @@ if not df.empty:
     else:
         st.info("No hourly data to show.")
 
-    # === Earnings Per Mile Distribution ===
-    st.subheader("📊 Earnings Per Mile Distribution")
-    if len(df) > 1:
-        fig = px.histogram(
-            df,
-            x="earnings_per_mile",
-            nbins=20,
-            labels={"earnings_per_mile": "$ per Mile"},
-            color_discrete_sequence=["indianred"]
-        )
-        fig.update_layout(
-            yaxis_title="Number of Orders",
-            xaxis_title="Earnings per Mile ($)",
-            xaxis=dict(tickprefix="$", gridcolor="lightgray"),
-            yaxis=dict(gridcolor="lightgray"),
-            plot_bgcolor="white"
-        )
-        # Add average line
-        avg_epm = df["earnings_per_mile"].mean()
-        fig.add_vline(
-            x=avg_epm,
-            line_dash="dash",
-            line_color="blue",
-            annotation_text=f"Avg: ${avg_epm:.2f}",
-            annotation_position="top"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Need more data to show distribution")
-
     # === Smart Suggestion ===
     st.subheader("🧠 Smart Suggestion")
     if not hourly_rate.empty:
+        # Check if behind today's pace
+        hours_remaining = 24 - datetime.now(pytz.timezone("US/Eastern")).hour
+        needed_per_hour = today_goal_remaining / hours_remaining if hours_remaining > 0 else 0
+        
+        if today_earned < TARGET_DAILY and needed_per_hour > 0:
+            st.warning(f"🚨 Behind pace! Need ${needed_per_hour:.2f}/hr to hit goal")
+        
+        # Original best hour suggestion
         best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["hour"]
         best_earning = hourly_rate.loc[hourly_rate["order_total"].idxmax()]["order_total"]
         st.success(f"**Try working around {best_hour}:00** - Highest average earnings (${best_earning:.2f}/order)")
