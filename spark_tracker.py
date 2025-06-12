@@ -160,7 +160,7 @@ if last_checkin_date != today:
             st.session_state["last_checkin_date"] = str(today)
             if use_google_sheets:
                 ensure_user_row_exists(user_sheet, st.session_state["user_row"])
-                user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
+                user_sheet.update(f"C{st.session_state['user_row']}", [[str(today)]])
             st.experimental_rerun()
     else:
         if st.button("Take the day off"):
@@ -173,7 +173,7 @@ if last_checkin_date != today:
             st.session_state["last_checkin_date"] = str(today)
             if use_google_sheets:
                 ensure_user_row_exists(user_sheet, st.session_state["user_row"])
-                user_sheet.update_cell(st.session_state["user_row"], 3, str(today))
+                user_sheet.update(f"C{st.session_state['user_row']}", [[str(today)]])
             st.experimental_rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
