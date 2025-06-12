@@ -11,6 +11,7 @@ from google.oauth2.service_account import Credentials
 import os
 import pytz
 import plotly.express as px
+import time as sleep_time
 
 # === CONFIG ===
 TARGET_DAILY = 200
@@ -118,13 +119,23 @@ def load_data():
             return pd.read_csv(DATA_FILE, parse_dates=["timestamp"])
         return pd.DataFrame(columns=HEADERS)
 
-df = load_data()
+# Load data and store in session state
+if "df" not in st.session_state:
+    st.session_state.df = load_data()
+df = st.session_state.df
 
-# === DAILY CHECK-IN ===
+# === DAILY CHECK-IN FIX ===
 last_checkin_str = st.session_state.get("last_checkin_date", "")
-last_checkin_date = datetime.strptime(last_checkin_str, "%Y-%m-%d").date() if last_checkin_str else None
+if last_checkin_str:
+    try:
+        last_checkin_date = datetime.strptime(last_checkin_str, "%Y-%m-%d").date()
+    except ValueError:
+        last_checkin_date = None
+else:
+    last_checkin_date = None
 
-if (last_checkin_date != today) and "daily_checkin" not in st.session_state:
+# If we haven't checked in today, show the check-in form
+if last_checkin_date != today or "daily_checkin" not in st.session_state:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
     if working_today == "Yes":
@@ -165,6 +176,7 @@ if (last_checkin_date != today) and "daily_checkin" not in st.session_state:
             st.rerun()
     st.stop()
 
+# Initialize daily check-in if not already set
 if "daily_checkin" not in st.session_state:
     st.session_state["daily_checkin"] = {
         "date": today,
@@ -210,7 +222,7 @@ if not st.session_state["daily_checkin"]["working"]:
 
 # === OCR UPLOAD ===
 st.subheader("📸 Optional: Upload Screenshot")
-uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
+uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"], key="ocr_uploader")
 total_auto, miles_auto, ocr_time_value = 0.0, 0.0, None
 
 if uploaded_image:
@@ -229,17 +241,18 @@ if uploaded_image:
     st.write(f"**Miles:** {miles_auto or '❌'}")
     st.write(f"**Time:** {ocr_time or '❌'}")
     with st.expander("🧪 Raw OCR Text"):
-        st.text_area("OCR Output", extracted_text, height=150)
+        st.text_area("OCR Output", extracted_text, height=150, key="ocr_text")
 
 # === ENTRY FORM ===
-with st.form("entry_form"):
+with st.form("entry_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto or 0.0)
+        order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto or 0.0, key="order_total_input")
     with col2:
-        miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
-    delivery_time = st.time_input("Delivery Time", value=ocr_time_value or datetime.now(tz).time())
+        miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0, key="miles_input")
+    delivery_time = st.time_input("Delivery Time", value=ocr_time_value or datetime.now(tz).time(), key="delivery_time_input")
     submitted = st.form_submit_button("Add Entry")
+    
     if submitted:
         timestamp = tz.localize(datetime.combine(today, delivery_time))
         earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
@@ -254,15 +267,25 @@ with st.form("entry_form"):
             if use_google_sheets:
                 worksheet.append_row([str(new_row[k]) for k in HEADERS])
             else:
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                df.to_csv(DATA_FILE, index=False)
+                # Update session state df
+                new_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                new_df.to_csv(DATA_FILE, index=False)
+                st.session_state.df = new_df
+            
             st.success("✅ Entry saved!")
+            # Clear the uploaded image
+            st.session_state.ocr_uploader = None
+            # Rerun to update metrics
             st.rerun()
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
-# === METRICS + CHARTS ===
+# === METRICS + CHARTS - AUTOMATIC UPDATE ===
 if not df.empty:
+    # Create a container for metrics that will update automatically
+    metrics_container = st.container()
+    
+    # Process data
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
     df["date"] = df["timestamp"].dt.date
@@ -273,7 +296,7 @@ if not df.empty:
 
     today_earned = today_df["order_total"].sum()
     today_miles = today_df["miles"].sum()
-    yesterday_earned = yesterday_df["order_total"].sum()
+    yesterday_earned = yesterday_df["order_total"].sum() if not yesterday_df.empty else 0
 
     daily_totals = df.groupby("date")["order_total"].sum().reset_index()
     hourly_rate = df.groupby("hour")["order_total"].mean().reset_index()
@@ -281,49 +304,51 @@ if not df.empty:
     total_earned = df["order_total"].sum()
     total_miles = df["miles"].sum()
     earnings_per_mile = total_earned / total_miles if total_miles else 0
-    avg_per_day = total_earned / df["date"].nunique()
+    avg_per_day = total_earned / df["date"].nunique() if df["date"].nunique() else 0
 
     current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
 
-    st.subheader("📊 Today's Progress")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Today's Earnings", f"${today_earned:.2f}")
-    col2.metric("Today's Miles", f"{today_miles:.1f}")
-    col3.metric("Daily Goal", f"${current_target}")
-    progress = min(today_earned / current_target, 1) if current_target > 0 else 0
-    col4.metric("Progress", f"{progress*100:.0f}%")
-    st.progress(progress, text=f"${today_earned:.2f} / ${current_target}")
+    # Display all metrics in the container
+    with metrics_container:
+        st.subheader("📊 Today's Progress")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Today's Earnings", f"${today_earned:.2f}")
+        col2.metric("Today's Miles", f"{today_miles:.1f}")
+        col3.metric("Daily Goal", f"${current_target}")
+        progress = min(today_earned / current_target, 1) if current_target > 0 else 0
+        col4.metric("Progress", f"{progress*100:.0f}%")
+        st.progress(progress, text=f"${today_earned:.2f} / ${current_target}")
 
-    if yesterday_earned > 0:
-        st.subheader("🔄 Yesterday Comparison")
-        st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
-        st.metric("Change", f"${today_earned - yesterday_earned:.2f}")
+        if yesterday_earned > 0:
+            st.subheader("🔄 Yesterday Comparison")
+            st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
+            st.metric("Change", f"${today_earned - yesterday_earned:.2f}")
 
-    st.subheader("📈 Historical Performance")
-    st.metric("Total Earned", f"${total_earned:.2f}")
-    st.metric("Total Miles", f"{total_miles:.1f}")
-    st.metric("Avg $ / Mile", f"${earnings_per_mile:.2f}")
-    st.metric("Avg Per Day", f"${avg_per_day:.2f}")
+        st.subheader("📈 Historical Performance")
+        st.metric("Total Earned", f"${total_earned:.2f}")
+        st.metric("Total Miles", f"{total_miles:.1f}")
+        st.metric("Avg $ / Mile", f"${earnings_per_mile:.2f}")
+        st.metric("Avg Per Day", f"${avg_per_day:.2f}")
 
-    if not daily_totals.empty:
-        fig = px.bar(daily_totals, x="date", y="order_total", text_auto=True, color="order_total", color_continuous_scale="Bluered")
-        fig.add_hline(y=current_target, line_dash="dash", line_color="red", annotation_text="Daily Target")
-        st.plotly_chart(fig, use_container_width=True)
+        if not daily_totals.empty:
+            fig = px.bar(daily_totals, x="date", y="order_total", text_auto=True, color="order_total", color_continuous_scale="Bluered")
+            fig.add_hline(y=current_target, line_dash="dash", line_color="red", annotation_text="Daily Target")
+            st.plotly_chart(fig, use_container_width=True)
 
-    if not hourly_rate.empty:
-        st.subheader("🕒 Average $ per Hour")
-        fig = px.line(hourly_rate, x="hour", y="order_total", markers=True)
-        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]
-        fig.add_annotation(x=best_hour["hour"], y=best_hour["order_total"],
-                           text=f"Best: ${best_hour['order_total']:.2f}", showarrow=True, arrowhead=2)
-        st.plotly_chart(fig, use_container_width=True)
+        if not hourly_rate.empty:
+            st.subheader("🕒 Average $ per Hour")
+            fig = px.line(hourly_rate, x="hour", y="order_total", markers=True)
+            best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]
+            fig.add_annotation(x=best_hour["hour"], y=best_hour["order_total"],
+                            text=f"Best: ${best_hour['order_total']:.2f}", showarrow=True, arrowhead=2)
+            st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("🧠 Smart Suggestion")
-        now = datetime.now(tz)
-        hours_left = 24 - now.hour
-        if hours_left > 0 and today_earned < current_target:
-            needed = (current_target - today_earned) / hours_left
-            st.warning(f"To hit your goal, try earning ${needed:.2f}/hr for the rest of today.")
-        st.success(f"🕑 Best time to work: Around {best_hour['hour']}:00 – Avg ${best_hour['order_total']:.2f}")
+            st.subheader("🧠 Smart Suggestion")
+            now = datetime.now(tz)
+            hours_left = 24 - now.hour
+            if hours_left > 0 and today_earned < current_target:
+                needed = (current_target - today_earned) / hours_left
+                st.warning(f"To hit your goal, try earning ${needed:.2f}/hr for the rest of today.")
+            st.success(f"🕑 Best time to work: Around {best_hour['hour']}:00 – Avg ${best_hour['order_total']:.2f}")
 else:
     st.info("No data yet. Add some entries to get started!")
