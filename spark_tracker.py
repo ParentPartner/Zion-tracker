@@ -177,12 +177,23 @@ if last_checkin_date != today:
             st.rerun()
     st.stop()
 elif "daily_checkin" not in st.session_state:
-    st.session_state["daily_checkin"] = {
-        "date": today,
-        "working": False,
-        "goal": 0,
-        "notes": ""
-    }
+    # If already checked in today but session restarted, restore a default daily_checkin
+    if last_checkin_date == today:
+        # Restore only the basic structure (goal will be remembered from session_state["last_goal"])
+        st.session_state["daily_checkin"] = {
+            "date": today,
+            "working": True,
+            "goal": st.session_state.get("last_goal", TARGET_DAILY),
+            "notes": ""
+        }
+    else:
+        st.session_state["daily_checkin"] = {
+            "date": today,
+            "working": False,
+            "goal": 0,
+            "notes": ""
+        }
+
 
 # === UI ===
 current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
