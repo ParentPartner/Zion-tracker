@@ -1,4 +1,4 @@
-# 🚗 Spark Delivery Tracker (with Google Sheets login and persistent daily check-in)
+# 🚗 Spark Delivery Tracker (with login & persistent daily check-in)
 
 import streamlit as st
 import pandas as pd
@@ -61,10 +61,26 @@ def google_sheets_login():
             users = user_sheet.get_all_records()
             for idx, user in enumerate(users):
                 if user["username"].strip().lower() == username and user["password"].strip() == password:
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = username
-                    st.session_state["user_row"] = idx + 2
-                    st.session_state["last_checkin_date"] = user.get("last_checkin_date", "")
+                    today = get_current_date()
+                    st.session_state.update({
+                        "logged_in": True,
+                        "username": username,
+                        "user_row": idx + 2,
+                        "last_checkin_date": user.get("last_checkin_date", "")
+                    })
+                    last_ci_str = st.session_state["last_checkin_date"]
+                    if last_ci_str:
+                        try:
+                            ci_date = datetime.strptime(last_ci_str, "%Y-%m-%d").date()
+                            if ci_date == today:
+                                st.session_state["daily_checkin"] = {
+                                    "date": today,
+                                    "working": True,
+                                    "goal": st.session_state.get("last_goal", TARGET_DAILY),
+                                    "notes": ""
+                                }
+                        except:
+                            pass
                     st.rerun()
             st.error("Invalid username or password")
 
@@ -72,6 +88,14 @@ if "logged_in" not in st.session_state:
     google_sheets_login()
     st.stop()
 
+# === DATE FUNCTIONS ===
+today = get_current_date()
+yesterday = today - timedelta(days=1)
+
+def get_date_data(df, target_date):
+    return df[df['timestamp'].dt.date == target_date]
+
+# === LOAD DATA ===
 def load_data():
     if use_google_sheets:
         try:
@@ -96,43 +120,11 @@ def load_data():
 
 df = load_data()
 
-def get_yesterday():
-    return (datetime.now(tz) - timedelta(days=1)).date()
-
-def get_date_data(df, target_date):
-    return df[df['timestamp'].dt.date == target_date]
-
-def extract_text_and_time(image_bytes):
-    reader = easyocr.Reader(['en'])
-    results = reader.readtext(image_bytes, detail=0)
-    text = "\n".join(results)
-    time_match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
-    ocr_time = time_match.group(0) if time_match else None
-    return text, ocr_time
-
-def parse_order_details(text):
-    text_lower = text.lower()
-    order_total, miles = 0.0, 0.0
-    estimate_match = re.search(r"\$?(\d+(?:\.\d{1,2})?)\s*estimate", text_lower)
-    if estimate_match:
-        order_total = float(estimate_match.group(1))
-    else:
-        total_matches = re.findall(r"\$?(\d+(?:\.\d{1,2})?)", text_lower)
-        if total_matches:
-            order_total = float(total_matches[-1])
-    miles_match = re.search(r"(\d+(?:\.\d{1,2})?)\s*mi", text_lower)
-    if miles_match:
-        miles = float(miles_match.group(1))
-    return order_total, miles
-
 # === DAILY CHECK-IN ===
-today = get_current_date()
-yesterday = get_yesterday()
-
 last_checkin_str = st.session_state.get("last_checkin_date", "")
 last_checkin_date = datetime.strptime(last_checkin_str, "%Y-%m-%d").date() if last_checkin_str else None
 
-if last_checkin_date != today:
+if (last_checkin_date != today) and "daily_checkin" not in st.session_state:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
     if working_today == "Yes":
@@ -172,24 +164,40 @@ if last_checkin_date != today:
                 user_sheet.update(f"C{st.session_state['user_row']}", [[str(today)]])
             st.rerun()
     st.stop()
-elif "daily_checkin" not in st.session_state:
-    if last_checkin_date == today:
-        st.session_state["daily_checkin"] = {
-            "date": today,
-            "working": True,
-            "goal": st.session_state.get("last_goal", TARGET_DAILY),
-            "notes": ""
-        }
-    else:
-        st.session_state["daily_checkin"] = {
-            "date": today,
-            "working": False,
-            "goal": 0,
-            "notes": ""
-        }
 
-# === MAIN UI ===
-current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
+if "daily_checkin" not in st.session_state:
+    st.session_state["daily_checkin"] = {
+        "date": today,
+        "working": True,
+        "goal": st.session_state.get("last_goal", TARGET_DAILY),
+        "notes": ""
+    }
+
+# === OCR ===
+def extract_text_and_time(image_bytes):
+    reader = easyocr.Reader(['en'])
+    results = reader.readtext(image_bytes, detail=0)
+    text = "\n".join(results)
+    time_match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    ocr_time = time_match.group(0) if time_match else None
+    return text, ocr_time
+
+def parse_order_details(text):
+    text_lower = text.lower()
+    order_total, miles = 0.0, 0.0
+    estimate_match = re.search(r"\$?(\d+(?:\.\d{1,2})?)\s*estimate", text_lower)
+    if estimate_match:
+        order_total = float(estimate_match.group(1))
+    else:
+        total_matches = re.findall(r"\$?(\d+(?:\.\d{1,2})?)", text_lower)
+        if total_matches:
+            order_total = float(total_matches[-1])
+    miles_match = re.search(r"(\d+(?:\.\d{1,2})?)\s*mi", text_lower)
+    if miles_match:
+        miles = float(miles_match.group(1))
+    return order_total, miles
+
+# === UI ===
 st.title("🚗 Spark Delivery Tracker")
 
 if st.session_state["daily_checkin"].get("notes"):
@@ -200,7 +208,7 @@ if not st.session_state["daily_checkin"]["working"]:
     st.success("🏖️ Enjoy your day off!")
     st.stop()
 
-# === OCR INPUT ===
+# === OCR UPLOAD ===
 st.subheader("📸 Optional: Upload Screenshot")
 uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"])
 total_auto, miles_auto, ocr_time_value = 0.0, 0.0, None
@@ -223,7 +231,7 @@ if uploaded_image:
     with st.expander("🧪 Raw OCR Text"):
         st.text_area("OCR Output", extracted_text, height=150)
 
-# === MANUAL ENTRY FORM ===
+# === ENTRY FORM ===
 with st.form("entry_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -253,7 +261,7 @@ with st.form("entry_form"):
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
-# === METRICS & SMART CHARTS ===
+# === METRICS + CHARTS ===
 if not df.empty:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
     df["hour"] = df["timestamp"].dt.hour
@@ -274,6 +282,8 @@ if not df.empty:
     total_miles = df["miles"].sum()
     earnings_per_mile = total_earned / total_miles if total_miles else 0
     avg_per_day = total_earned / df["date"].nunique()
+
+    current_target = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
 
     st.subheader("📊 Today's Progress")
     col1, col2, col3, col4 = st.columns(4)
