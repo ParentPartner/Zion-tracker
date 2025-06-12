@@ -230,7 +230,7 @@ with st.form("entry_form"):
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 df.to_csv(DATA_FILE, index=False)
             st.success("✅ Entry saved!")
-            st.experimental_rerun()
+            st.rerun()
         except Exception as e:
             st.error(f"❌ Error saving: {e}")
 
