@@ -204,6 +204,44 @@ with col2:
     fig = px.bar(avg_by_hour, x="hour", y="order_total", title="Avg Earnings by Hour")
     st.plotly_chart(fig, use_container_width=True)
 
+# === AI Suggestions Engine ===
+st.header("🤖 Smart Suggestions")
+
+user_df = df_all[df_all["username"] == user].copy()
+
+if not user_df.empty:
+    # Earnings per hour
+    user_df["hour"] = user_df["timestamp"].dt.hour
+    hour_avg = user_df.groupby("hour")["order_total"].mean().sort_values(ascending=False)
+    best_hour = hour_avg.idxmax()
+    best_hour_val = hour_avg.max()
+
+    # Earnings per weekday
+    user_df["weekday"] = user_df["timestamp"].dt.day_name()
+    weekday_avg = user_df.groupby("weekday")["order_total"].mean().sort_values(ascending=False)
+    best_day = weekday_avg.idxmax()
+    best_day_val = weekday_avg.max()
+
+    # Earnings per mile
+    user_df["efficiency"] = user_df["order_total"] / user_df["miles"].replace(0, 0.01)
+    best_eff = user_df["efficiency"].median()
+
+    # Generate natural language suggestion
+    st.markdown(f"""
+    ✅ Based on your past deliveries:
+    
+    - **📆 Best day:** `{best_day}` – you average **${best_day_val:.2f}** per order.
+    - **⏰ Best hour:** `{best_hour}:00` – you average **${best_hour_val:.2f}** per order.
+    - **🚗 Ideal Efficiency:** Aim for at least **${best_eff:.2f}/mile**.
+    """)
+    
+    if best_day_val > 25 and best_hour_val > 20:
+        st.success("📈 Tip: Try scheduling deliveries on "
+                   f"**{best_day} between {best_hour}:00 and {best_hour+1}:00** — your top earning slot!")
+
+else:
+    st.info("Do a few deliveries to unlock smart suggestions.")
+
 # Day-of-week heatmap
 st.subheader("📅 Earnings by Day of Week")
 dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
