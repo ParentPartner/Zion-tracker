@@ -91,7 +91,7 @@ if "logged_in" not in st.session_state:
                 "username": username,
                 "last_checkin_date": get_user(username).get("last_checkin_date", "")
             })
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid credentials")
     st.stop()
@@ -127,13 +127,13 @@ if last_ci_date != today:
             st.session_state["daily_checkin"] = {"working": True, "goal": goal, "notes": notes}
             st.session_state["last_checkin_date"] = today.isoformat()
             update_last_checkin(user, today.isoformat())
-            st.experimental_rerun()
+            st.rerun()
     else:
         if st.button("Take the day off"):
             st.session_state["daily_checkin"] = {"working": False, "goal": 0, "notes": "Day off"}
             st.session_state["last_checkin_date"] = today.isoformat()
             update_last_checkin(user, today.isoformat())
-            st.experimental_rerun()
+            st.rerun()
     st.stop()
 
 # Main tracker interface
@@ -170,7 +170,7 @@ with st.form("entry"):
         }
         add_entry_to_firestore(entry)
         st.success("Saved!")
-        st.experimental_rerun()
+        st.rerun()
 
 # Display metrics/charts
 df_all = load_all_deliveries()
