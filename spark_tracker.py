@@ -183,7 +183,7 @@ else:
     today_df = pd.DataFrame()
 
 earned = today_df["order_total"].sum() if not today_df.empty else 0.0
-goal = st.session_state["daily_checkin"]["goal"]
+goal = st.session_state.get("daily_checkin", {}).get("goal", 0)
 perc = min(earned / goal * 100, 100) if goal else 0
 st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
