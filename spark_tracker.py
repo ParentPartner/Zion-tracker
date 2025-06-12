@@ -149,12 +149,16 @@ if uploaded:
 
 with st.form("entry"):
     st.subheader("Order Entry")
-    dt = st.time_input("Time", value=parsed["timestamp"].time() if parsed else datetime.now(tz).time())
+    default_time = parsed["timestamp"].time() if parsed else datetime.now(tz).time()
+    dt = st.time_input("Time", value=default_time)
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
+
     if st.form_submit_button("Save"):
-        naive_dt = datetime.combine(today, dt)  # naive datetime
-        aware_dt = tz.localize(naive_dt)        # localize to timezone
+        base_date = parsed["timestamp"].date() if parsed else today
+        naive_dt = datetime.combine(base_date, dt)
+        aware_dt = tz.localize(naive_dt)
+
         entry = {
             "timestamp": aware_dt.isoformat(),
             "order_total": ot,
@@ -163,6 +167,7 @@ with st.form("entry"):
             "hour": dt.hour,
             "username": user
         }
+
         add_entry_to_firestore(entry)
         st.success("Saved!")
         st.rerun()
@@ -190,7 +195,6 @@ st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 
 # === Delete Entries ===
 st.subheader("🗑️ Delete Entries")
-
 selected_date = st.date_input("Select date to manage entries", value=today)
 entries_to_show = df_all[df_all["date"] == selected_date] if not df_all.empty else pd.DataFrame()
 
