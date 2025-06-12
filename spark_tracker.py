@@ -51,7 +51,7 @@ def load_all_deliveries():
         data.append(doc.to_dict())
     df = pd.DataFrame(data)
     if not df.empty and "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
 
 # === OCR PARSING ===
@@ -107,7 +107,8 @@ if last_ci_date != today:
     if working == "Yes":
         df_all = load_all_deliveries()
         yesterday_sum = 0
-        if not df_all.empty:
+        if not df_all.empty and "timestamp" in df_all.columns:
+            df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
             yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
         col1, col2 = st.columns([2, 3])
         with col1:
@@ -166,19 +167,17 @@ with st.form("entry"):
 
 # Load + Filter
 df_all = load_all_deliveries()
-
-# Filter to current user if data exists
-if not df_all.empty and "username" in df_all.columns:
-    df_all = df_all[df_all["username"] == user]
-else:
-    df_all = pd.DataFrame()  # Empty fallback to avoid crashes
-if not df_all.empty:
+if not df_all.empty and "timestamp" in df_all.columns:
+    df_all = df_all[df_all["username"] == user] if "username" in df_all.columns else pd.DataFrame()
+    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
+    df_all = df_all.dropna(subset=["timestamp"])
     df_all["date"] = df_all["timestamp"].dt.date
     df_all["hour"] = df_all["timestamp"].dt.hour
     df_all["hour_12"] = df_all["timestamp"].dt.strftime("%I %p")
     df_all["day_of_week"] = df_all["timestamp"].dt.day_name()
     today_df = df_all[df_all["date"] == today]
 else:
+    df_all = pd.DataFrame()
     today_df = pd.DataFrame()
 
 # Earnings Goal
@@ -190,9 +189,8 @@ st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
 # === Delete Entries ===
 st.subheader("🗑️ Delete Entries")
 
-# Select date to view entries
 selected_date = st.date_input("Select date to manage entries", value=today)
-entries_to_show = df_all[df_all["date"] == selected_date]
+entries_to_show = df_all[df_all["date"] == selected_date] if not df_all.empty else pd.DataFrame()
 
 if not entries_to_show.empty:
     for i, row in entries_to_show.iterrows():
@@ -203,7 +201,6 @@ if not entries_to_show.empty:
             st.write(f"EPM: ${row['earnings_per_mile']:.2f}")
         with col3:
             if st.button("🗑️ Delete", key=f"del_{i}"):
-                # Find and delete this entry from Firestore
                 all_docs = list(db.collection("deliveries").stream())
                 for doc in all_docs:
                     data = doc.to_dict()
@@ -218,40 +215,36 @@ if not entries_to_show.empty:
 else:
     st.info("No entries found for this date.")
 
-
 # === Analytics ===
 st.subheader("📈 Analytics & Trends")
 col1, col2 = st.columns(2)
 
-with col1:
-    daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
-    fig = px.line(daily_totals, x="date", y="order_total", title="📅 Daily Earnings", markers=True)
-    fig.update_layout(xaxis_title="Date", yaxis_title="Total Earned ($)", template="plotly_white")
-    st.plotly_chart(fig, use_container_width=True)
+if not df_all.empty:
+    with col1:
+        daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
+        fig = px.line(daily_totals, x="date", y="order_total", title="📅 Daily Earnings", markers=True)
+        fig.update_layout(xaxis_title="Date", yaxis_title="Total Earned ($)", template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
 
-with col2:
-    avg_by_hour = df_all.groupby("hour_12")["order_total"].mean().reset_index()
-    fig = px.bar(avg_by_hour, x="hour_12", y="order_total", title="⏰ Avg Earnings by Hour",
-                 labels={"hour_12": "Hour", "order_total": "Avg $"})
-    fig.update_layout(xaxis_categoryorder="array", xaxis_categoryarray=avg_by_hour["hour_12"],
-                      template="plotly_white")
-    st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        avg_by_hour = df_all.groupby("hour_12")["order_total"].mean().reset_index()
+        fig = px.bar(avg_by_hour, x="hour_12", y="order_total", title="⏰ Avg Earnings by Hour",
+                     labels={"hour_12": "Hour", "order_total": "Avg $"})
+        fig.update_layout(xaxis_categoryorder="array", xaxis_categoryarray=avg_by_hour["hour_12"],
+                          template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
 
-# === Smart Suggestions ===
-st.header("🤖 Smart Suggestions")
-user_df = df_all.copy()
-
-if not user_df.empty:
-    hour_avg = user_df.groupby("hour")["order_total"].mean()
+    st.header("🤖 Smart Suggestions")
+    hour_avg = df_all.groupby("hour")["order_total"].mean()
     best_hour = hour_avg.idxmax()
     best_hour_val = hour_avg.max()
 
-    weekday_avg = user_df.groupby("day_of_week")["order_total"].mean()
+    weekday_avg = df_all.groupby("day_of_week")["order_total"].mean()
     best_day = weekday_avg.idxmax()
     best_day_val = weekday_avg.max()
 
-    user_df["efficiency"] = user_df["order_total"] / user_df["miles"].replace(0, 0.01)
-    best_eff = user_df["efficiency"].median()
+    df_all["efficiency"] = df_all["order_total"] / df_all["miles"].replace(0, 0.01)
+    best_eff = df_all["efficiency"].median()
 
     st.markdown(f"""
     ✅ Based on your delivery history:
@@ -263,17 +256,17 @@ if not user_df.empty:
 
     if best_day_val > 25 and best_hour_val > 20:
         st.success(f"🔥 Tip: Deliver on **{best_day} between {best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'} and {(best_hour + 1) % 12 or 12}:00**")
+
+    st.subheader("📅 Hourly Earnings by Weekday")
+    dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
+    dow_summary["hour"] = dow_summary["hour"].astype(int)
+    dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    dow_summary["day_of_week"] = pd.Categorical(dow_summary["day_of_week"], categories=dow_order, ordered=True)
+    pivot = dow_summary.pivot(index="hour", columns="day_of_week", values="order_total").fillna(0)
+    fig = px.imshow(pivot, labels=dict(x="Day", y="Hour (24h)", color="Avg $"), title="📊 Heatmap of Avg Earnings")
+    st.plotly_chart(fig, use_container_width=True)
+
 else:
     st.info("Do a few deliveries to unlock smart insights.")
-
-# === Heatmap ===
-st.subheader("📅 Hourly Earnings by Weekday")
-dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
-dow_summary["hour"] = dow_summary["hour"].astype(int)
-dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-dow_summary["day_of_week"] = pd.Categorical(dow_summary["day_of_week"], categories=dow_order, ordered=True)
-pivot = dow_summary.pivot(index="hour", columns="day_of_week", values="order_total").fillna(0)
-fig = px.imshow(pivot, labels=dict(x="Day", y="Hour (24h)", color="Avg $"), title="📊 Heatmap of Avg Earnings")
-st.plotly_chart(fig, use_container_width=True)
 
 st.caption("🏁 Built with Firebase & Streamlit | Data stays 100% yours.")
