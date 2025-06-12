@@ -150,14 +150,14 @@ if uploaded:
 with st.form("entry"):
     st.subheader("Order Entry")
     default_time = parsed["timestamp"].time() if parsed else datetime.now(tz).time()
-    default_date = parsed["timestamp"].date() if parsed else today
     dt = st.time_input("Time", value=default_time)
-    dt_date = st.date_input("Date", value=default_date)
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
 
     if st.form_submit_button("Save"):
-        naive_dt = datetime.combine(dt_date, dt)
+        selected_time = dt
+        selected_date = parsed["timestamp"].date() if parsed else today
+        naive_dt = datetime.combine(selected_date, selected_time)
         aware_dt = tz.localize(naive_dt)
 
         entry = {
@@ -165,7 +165,7 @@ with st.form("entry"):
             "order_total": ot,
             "miles": ml,
             "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
-            "hour": dt.hour,
+            "hour": selected_time.hour,
             "username": user
         }
 
@@ -173,4 +173,107 @@ with st.form("entry"):
         st.success("Saved!")
         st.rerun()
 
-# [Everything else remains unchanged after this point...]
+# Load + Filter
+df_all = load_all_deliveries()
+if not df_all.empty and "timestamp" in df_all.columns:
+    df_all = df_all[df_all["username"] == user] if "username" in df_all.columns else pd.DataFrame()
+    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
+    df_all = df_all.dropna(subset=["timestamp"])
+    df_all["date"] = df_all["timestamp"].dt.date
+    df_all["hour"] = df_all["timestamp"].dt.hour
+    df_all["hour_12"] = df_all["timestamp"].dt.strftime("%I %p")
+    df_all["day_of_week"] = df_all["timestamp"].dt.day_name()
+    today_df = df_all[df_all["date"] == today]
+else:
+    df_all = pd.DataFrame()
+    today_df = pd.DataFrame()
+
+# Earnings Goal
+earned = today_df["order_total"].sum() if not today_df.empty else 0.0
+goal = st.session_state.get("daily_checkin", {}).get("goal", 0)
+perc = min(earned / goal * 100, 100) if goal else 0
+st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of goal")
+
+# === Delete Entries ===
+st.subheader("🗑️ Delete Entries")
+selected_date = st.date_input("Select date to manage entries", value=today)
+entries_to_show = df_all[df_all["date"] == selected_date] if not df_all.empty else pd.DataFrame()
+
+if not entries_to_show.empty:
+    for i, row in entries_to_show.iterrows():
+        col1, col2, col3 = st.columns([3, 2, 1])
+        with col1:
+            st.write(f"🕒 {row['timestamp'].strftime('%I:%M %p')} | 💵 ${row['order_total']:.2f} | 🚗 {row['miles']} mi")
+        with col2:
+            st.write(f"EPM: ${row['earnings_per_mile']:.2f}")
+        with col3:
+            if st.button("🗑️ Delete", key=f"del_{i}"):
+                all_docs = list(db.collection("deliveries").stream())
+                for doc in all_docs:
+                    data = doc.to_dict()
+                    if (
+                        data.get("username") == user and
+                        abs(pd.to_datetime(data.get("timestamp")) - row["timestamp"]) < timedelta(seconds=5) and
+                        float(data.get("order_total")) == row["order_total"]
+                    ):
+                        db.collection("deliveries").document(doc.id).delete()
+                        st.success("Entry deleted!")
+                        st.rerun()
+else:
+    st.info("No entries found for this date.")
+
+# === Analytics ===
+st.subheader("📈 Analytics & Trends")
+col1, col2 = st.columns(2)
+
+if not df_all.empty:
+    with col1:
+        daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
+        fig = px.line(daily_totals, x="date", y="order_total", title="📅 Daily Earnings", markers=True)
+        fig.update_layout(xaxis_title="Date", yaxis_title="Total Earned ($)", template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        avg_by_hour = df_all.groupby("hour_12")["order_total"].mean().reset_index()
+        fig = px.bar(avg_by_hour, x="hour_12", y="order_total", title="⏰ Avg Earnings by Hour",
+                     labels={"hour_12": "Hour", "order_total": "Avg $"})
+        fig.update_layout(xaxis_categoryorder="array", xaxis_categoryarray=avg_by_hour["hour_12"],
+                          template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.header("🤖 Smart Suggestions")
+    hour_avg = df_all.groupby("hour")["order_total"].mean()
+    best_hour = hour_avg.idxmax()
+    best_hour_val = hour_avg.max()
+
+    weekday_avg = df_all.groupby("day_of_week")["order_total"].mean()
+    best_day = weekday_avg.idxmax()
+    best_day_val = weekday_avg.max()
+
+    df_all["efficiency"] = df_all["order_total"] / df_all["miles"].replace(0, 0.01)
+    best_eff = df_all["efficiency"].median()
+
+    st.markdown(f"""
+    ✅ Based on your delivery history:
+
+    - **📆 Best day:** `{best_day}` – avg **${best_day_val:.2f}**/order  
+    - **⏰ Best hour:** `{best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'}` – avg **${best_hour_val:.2f}**  
+    - **🚗 Efficiency Tip:** Aim for **${best_eff:.2f}/mile**
+    """)
+
+    if best_day_val > 25 and best_hour_val > 20:
+        st.success(f"🔥 Tip: Deliver on **{best_day} between {best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'} and {(best_hour + 1) % 12 or 12}:00**")
+
+    st.subheader("📅 Hourly Earnings by Weekday")
+    dow_summary = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().reset_index()
+    dow_summary["hour"] = dow_summary["hour"].astype(int)
+    dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    dow_summary["day_of_week"] = pd.Categorical(dow_summary["day_of_week"], categories=dow_order, ordered=True)
+    pivot = dow_summary.pivot(index="hour", columns="day_of_week", values="order_total").fillna(0)
+    fig = px.imshow(pivot, labels=dict(x="Day", y="Hour (24h)", color="Avg $"), title="📊 Heatmap of Avg Earnings")
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.info("Do a few deliveries to unlock smart insights.")
+
+st.caption("🏁 Built with Firebase & Streamlit | Data stays 100% yours.")
