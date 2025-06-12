@@ -47,7 +47,7 @@ def login():
         if submitted:
             if username.lower() == USERNAME.lower() and password.lower() == PASSWORD.lower():
                 st.session_state["logged_in"] = True
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid login")
 
