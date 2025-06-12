@@ -166,7 +166,12 @@ with st.form("entry"):
 
 # Load + Filter
 df_all = load_all_deliveries()
-df_all = df_all[df_all["username"] == user]
+
+# Filter to current user if data exists
+if not df_all.empty and "username" in df_all.columns:
+    df_all = df_all[df_all["username"] == user]
+else:
+    df_all = pd.DataFrame()  # Empty fallback to avoid crashes
 if not df_all.empty:
     df_all["date"] = df_all["timestamp"].dt.date
     df_all["hour"] = df_all["timestamp"].dt.hour
