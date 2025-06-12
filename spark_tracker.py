@@ -154,7 +154,7 @@ with st.form("entry"):
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
     if st.form_submit_button("Save"):
         entry = {
-            "timestamp": datetime.combine(today, dt).isoformat(),
+            "timestamp": tz.localize(datetime.combine(today, dt)).isoformat(),
             "order_total": ot,
             "miles": ml,
             "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
