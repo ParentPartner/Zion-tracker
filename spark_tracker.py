@@ -157,7 +157,7 @@ if "last_checkin_date" not in st.session_state or st.session_state["last_checkin
                 }
                 st.session_state["last_goal"] = today_goal
                 st.session_state["last_checkin_date"] = today
-                st.experimental_rerun()
+                st.rerun()
 
         else:
             if st.button("Take the day off"):
