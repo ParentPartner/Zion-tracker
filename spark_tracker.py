@@ -1,4 +1,4 @@
-# 🚗 Spark Delivery Tracker (SQLite Version)
+# 🚗 Spark Delivery Tracker (Full SQLite Version with OCR & Daily Check-In)
 
 import streamlit as st
 import pandas as pd
@@ -18,21 +18,17 @@ CAR_COST_MONTHLY = 620 + 120
 tz = pytz.timezone("US/Eastern")
 HEADERS = ["timestamp", "order_total", "miles", "earnings_per_mile", "hour"]
 
-def get_current_date():
-    return datetime.now(tz).date()
-
 # === DB SETUP ===
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
                 last_checkin_date TEXT
             )
         """)
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS deliveries (
                 timestamp TEXT,
                 order_total REAL,
@@ -41,32 +37,24 @@ def init_db():
                 hour INTEGER
             )
         """)
-        conn.commit()
 
 def create_default_user():
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE username = 'admin'")
-        if not c.fetchone():
-            c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", "password"))
-            conn.commit()
+        if not conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone():
+            conn.execute("INSERT INTO users (username, password, last_checkin_date) VALUES (?, ?, ?)",
+                         ("admin", "password", ""))
 
 def validate_login(username, password):
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
-        return c.fetchone()
+        return conn.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password)).fetchone()
 
 def update_last_checkin(username, date_str):
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("UPDATE users SET last_checkin_date=? WHERE username=?", (date_str, username))
-        conn.commit()
 
 def get_last_checkin_date(username):
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute("SELECT last_checkin_date FROM users WHERE username=?", (username,))
-        result = c.fetchone()
+        result = conn.execute("SELECT last_checkin_date FROM users WHERE username=?", (username,)).fetchone()
         return result[0] if result else ""
 
 def add_entry_to_db(entry):
@@ -75,7 +63,6 @@ def add_entry_to_db(entry):
             INSERT INTO deliveries (timestamp, order_total, miles, earnings_per_mile, hour)
             VALUES (?, ?, ?, ?, ?)
         """, (entry["timestamp"], entry["order_total"], entry["miles"], entry["earnings_per_mile"], entry["hour"]))
-        conn.commit()
 
 def load_data_from_db():
     with sqlite3.connect(DB_FILE) as conn:
@@ -84,13 +71,52 @@ def load_data_from_db():
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
         return df
 
+# === HELPERS ===
+def get_current_date():
+    return datetime.now(tz).date()
+
+def extract_text_from_image(image_file):
+    reader = easyocr.Reader(['en'], gpu=False)
+    img_bytes = image_file.read()
+    image_file.seek(0)
+    result = reader.readtext(img_bytes, detail=0)
+    return result
+
+def parse_screenshot_text(text):
+    text_joined = " ".join(text)
+    dollar_matches = re.findall(r"\$\s?(\d+(?:\.\d{1,2})?)", text_joined)
+    miles_matches = re.findall(r"(\d+(?:\.\d+)?)\s?(mi|miles)", text_joined.lower())
+    time_match = re.search(r"\b(\d{1,2}:\d{2})\b", text_joined)
+
+    order_total = float(dollar_matches[0]) if dollar_matches else 0
+    miles = float(miles_matches[0][0]) if miles_matches else 0
+
+    timestamp = datetime.now(tz)
+    if time_match:
+        h, m = map(int, time_match.group(1).split(":"))
+        timestamp = timestamp.replace(hour=h, minute=m, second=0)
+
+    return {
+        "timestamp": timestamp.isoformat(),
+        "order_total": order_total,
+        "miles": miles,
+        "earnings_per_mile": round(order_total / miles, 2) if miles else 0,
+        "hour": timestamp.hour
+    }
+
+def get_date_data(df, target_date):
+    if df.empty:
+        return df
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    return df[df['timestamp'].dt.date == target_date]
+
 # === INIT ===
 init_db()
 create_default_user()
 
 # === LOGIN ===
 if "logged_in" not in st.session_state:
-    st.title("🔐 Spark Tracker Login (SQLite)")
+    st.title("🔐 Spark Tracker Login")
     with st.form("login_form"):
         username = st.text_input("Username").strip().lower()
         password = st.text_input("Password", type="password")
@@ -112,36 +138,27 @@ today = get_current_date()
 yesterday = today - timedelta(days=1)
 df = load_data_from_db()
 
-def get_date_data(df, target_date):
-    if df.empty:
-        return df
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    return df[df['timestamp'].dt.date == target_date]
-
 last_ci_str = st.session_state.get("last_checkin_date", "")
+last_ci_date = None
 if last_ci_str:
     try:
         last_ci_date = datetime.strptime(last_ci_str, "%Y-%m-%d").date()
     except:
-        last_ci_date = None
-else:
-    last_ci_date = None
+        pass
 
-if last_ci_date != today or "daily_checkin" not in st.session_state:
+if last_ci_date != today:
     st.header("📅 Daily Check-In")
     working_today = st.radio("Are you working today?", ["Yes", "No"], index=0)
     if working_today == "Yes":
         yesterday_df = get_date_data(df, yesterday)
         earned_yest = yesterday_df["order_total"].sum() if not yesterday_df.empty else 0
-
         col1, col2 = st.columns([2, 3])
         with col1:
             st.metric("Yesterday's Earnings", f"${earned_yest:.2f}")
             default_goal = st.session_state.get("last_goal", TARGET_DAILY)
             today_goal = st.number_input("Today's Goal ($)", min_value=0, value=default_goal, step=10)
         with col2:
-            notes = st.text_area("Today's Notes & Goals", placeholder="Plans, goals, reminders...", height=100)
-
+            notes = st.text_area("Today's Notes", placeholder="Goals, mindset, reminders", height=100)
         if st.button("Start Tracking", type="primary"):
             st.session_state["daily_checkin"] = {
                 "date": today,
@@ -166,146 +183,58 @@ if last_ci_date != today or "daily_checkin" not in st.session_state:
             st.rerun()
     st.stop()
 
-# === OCR ===
-def extract_text_and_time(image_bytes):
-    reader = easyocr.Reader(['en'], gpu=False)
-    results = reader.readtext(image_bytes, detail=0)
-    text = "\n".join(results)
-    time_match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
-    ocr_time = time_match.group(0) if time_match else None
-    return text, ocr_time
+# === MAIN APP ===
+st.title("📦 Spark Delivery Tracker")
 
-def parse_order_details(text):
-    text_lower = text.lower()
-    order_total, miles = 0.0, 0.0
-    estimate_match = re.search(r"\$?(\d+(?:\.\d{1,2})?)\s*estimate", text_lower)
-    if estimate_match:
-        order_total = float(estimate_match.group(1))
-    else:
-        total_matches = re.findall(r"\$?(\d+(?:\.\d{1,2})?)", text_lower)
-        if total_matches:
-            order_total = float(total_matches[-1])
-    miles_match = re.search(r"(\d+(?:\.\d{1,2})?)\s*mi", text_lower)
-    if miles_match:
-        miles = float(miles_match.group(1))
-    return order_total, miles
+st.markdown("Upload a screenshot or enter your order manually:")
 
-# === UI ===
-st.title("🚗 Spark Delivery Tracker (SQLite)")
-if st.session_state["daily_checkin"].get("notes"):
-    st.subheader("📝 Today's Notes")
-    st.write(st.session_state["daily_checkin"]["notes"])
-if not st.session_state["daily_checkin"]["working"]:
-    st.success("🏖️ Enjoy your day off!")
-    st.stop()
+uploaded_file = st.file_uploader("📸 Screenshot (optional)", type=["jpg", "jpeg", "png"])
+if uploaded_file:
+    with st.spinner("Reading image..."):
+        text = extract_text_from_image(uploaded_file)
+        parsed = parse_screenshot_text(text)
+        st.success(f"OCR Extracted: ${parsed['order_total']} for {parsed['miles']} mi at {parsed['timestamp'][11:16]}")
+else:
+    parsed = None
 
-st.subheader("📸 Optional: Upload Screenshot")
-uploaded_image = st.file_uploader("Upload screenshot", type=["jpg", "jpeg", "png"], key="ocr_upload")
-total_auto, miles_auto, ocr_time_value = 0.0, 0.0, None
+with st.form("manual_entry"):
+    st.subheader("📝 Order Details")
+    order_total = st.number_input("Order Total ($)", min_value=0.0, step=1.0,
+                                  value=float(parsed['order_total']) if parsed else 0.0)
+    miles = st.number_input("Miles Driven", min_value=0.0, step=0.1,
+                            value=float(parsed['miles']) if parsed else 0.0)
+    timestamp = st.time_input("Delivery Time", value=datetime.strptime(parsed['timestamp'][11:16], "%H:%M").time()
+                              if parsed else datetime.now(tz).time())
 
-if uploaded_image:
-    with st.spinner("Reading screenshot..."):
-        image_bytes = BytesIO(uploaded_image.read()).getvalue()
-        extracted_text, ocr_time = extract_text_and_time(image_bytes)
-        total_auto, miles_auto = parse_order_details(extracted_text)
-        if ocr_time:
-            try:
-                hour, minute = map(int, ocr_time.split(":"))
-                ocr_time_value = time(hour, minute)
-            except:
-                pass
-    st.write("🧾 **Extracted Info**")
-    st.write(f"**Order Total:** {total_auto or '❌'}")
-    st.write(f"**Miles:** {miles_auto or '❌'}")
-    st.write(f"**Time:** {ocr_time or '❌'}")
-    with st.expander("🧪 Raw OCR Text"):
-        st.text_area("OCR Output", extracted_text, height=150)
-
-# === ENTRY FORM ===
-with st.form("entry_form", clear_on_submit=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        order_total = st.number_input("Order Total ($)", min_value=0.0, step=0.01, value=total_auto or 0.0)
-    with col2:
-        miles = st.number_input("Miles Driven", min_value=0.0, step=0.1, value=miles_auto or 0.0)
-    delivery_time = st.time_input("Delivery Time", value=ocr_time_value or datetime.now(tz).time())
-    submitted = st.form_submit_button("Add Entry")
-
-    if submitted:
-        timestamp = tz.localize(datetime.combine(today, delivery_time))
-        earnings_per_mile = round(order_total / miles, 2) if miles > 0 else 0.0
+    if st.form_submit_button("✅ Save Entry"):
+        dt = datetime.combine(get_current_date(), timestamp)
         entry = {
-            "timestamp": timestamp.isoformat(),
-            "order_total": float(order_total),
-            "miles": float(miles),
-            "earnings_per_mile": earnings_per_mile,
-            "hour": timestamp.hour
+            "timestamp": dt.isoformat(),
+            "order_total": order_total,
+            "miles": miles,
+            "earnings_per_mile": round(order_total / miles, 2) if miles else 0,
+            "hour": dt.hour
         }
         add_entry_to_db(entry)
         st.success("✅ Entry saved!")
-        st.rerun()
 
-# === METRICS + CHARTS ===
+# === METRICS & TRENDS ===
 df = load_data_from_db()
-if not df.empty:
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df["hour"] = df["timestamp"].dt.hour
-    df["date"] = df["timestamp"].dt.date
-    df["earnings_per_mile"] = df.apply(lambda r: r["order_total"] / r["miles"] if r["miles"] > 0 else 0, axis=1)
+today_df = get_date_data(df, today)
 
-    today_df = get_date_data(df, today)
-    yesterday_df = get_date_data(df, yesterday)
+st.subheader("📊 Today's Progress")
+earned = today_df["order_total"].sum()
+goal = st.session_state.get("daily_checkin", {}).get("goal", TARGET_DAILY)
+percent = min(earned / goal * 100, 100) if goal else 0
+st.metric("Earnings Today", f"${earned:.2f}", f"{percent:.0f}% of goal")
 
-    today_earned = today_df["order_total"].sum() if not today_df.empty else 0
-    today_miles = today_df["miles"].sum() if not today_df.empty else 0
-    yesterday_earned = yesterday_df["order_total"].sum() if not yesterday_df.empty else 0
-    daily_totals = df.groupby("date")["order_total"].sum().reset_index()
-    hourly_rate = df.groupby("hour")["order_total"].mean().reset_index()
-    total_earned = df["order_total"].sum()
-    total_miles = df["miles"].sum()
-    earnings_per_mile = total_earned / total_miles if total_miles > 0 else 0
-    avg_per_day = total_earned / df["date"].nunique() if df["date"].nunique() > 0 else 0
-    goal = st.session_state["daily_checkin"].get("goal", TARGET_DAILY)
+col1, col2 = st.columns(2)
+with col1:
+    fig1 = px.histogram(today_df, x="hour", y="order_total", nbins=24, title="Earnings by Hour")
+    st.plotly_chart(fig1, use_container_width=True)
 
-    st.subheader("📊 Today's Progress")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Today's Earnings", f"${today_earned:.2f}")
-    col2.metric("Today's Miles", f"{today_miles:.1f}")
-    col3.metric("Daily Goal", f"${goal}")
-    progress = min(today_earned / goal, 1) if goal > 0 else 0
-    col4.metric("Progress", f"{progress*100:.0f}%")
-    st.progress(progress, text=f"${today_earned:.2f} / ${goal}")
+with col2:
+    fig2 = px.scatter(today_df, x="miles", y="order_total", title="Order Value vs Miles")
+    st.plotly_chart(fig2, use_container_width=True)
 
-    if yesterday_earned > 0:
-        st.subheader("🔄 Yesterday Comparison")
-        st.metric("Yesterday's Earnings", f"${yesterday_earned:.2f}")
-        st.metric("Change", f"${today_earned - yesterday_earned:.2f}")
-
-    st.subheader("📈 Historical Performance")
-    st.metric("Total Earned", f"${total_earned:.2f}")
-    st.metric("Total Miles", f"{total_miles:.1f}")
-    st.metric("Avg $ / Mile", f"${earnings_per_mile:.2f}")
-    st.metric("Avg Per Day", f"${avg_per_day:.2f}")
-
-    if not daily_totals.empty:
-        fig = px.bar(daily_totals, x="date", y="order_total", text_auto=True, color="order_total", color_continuous_scale="Bluered")
-        fig.add_hline(y=goal, line_dash="dash", line_color="red", annotation_text="Daily Target")
-        st.plotly_chart(fig, use_container_width=True)
-
-    if not hourly_rate.empty:
-        st.subheader("🕒 Average $ per Hour")
-        fig = px.line(hourly_rate, x="hour", y="order_total", markers=True)
-        best_hour = hourly_rate.loc[hourly_rate["order_total"].idxmax()]
-        fig.add_annotation(x=best_hour["hour"], y=best_hour["order_total"],
-                           text=f"Best: ${best_hour['order_total']:.2f}", showarrow=True, arrowhead=2)
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("🧠 Smart Suggestion")
-        now = datetime.now(tz)
-        hours_left = 24 - now.hour
-        if hours_left > 0 and today_earned < goal:
-            needed = (goal - today_earned) / hours_left
-            st.warning(f"To hit your goal, aim for ${needed:.2f}/hr for the rest of today.")
-        st.success(f"🕑 Best hour: Around {best_hour['hour']}:00 — Avg ${best_hour['order_total']:.2f}")
-else:
-    st.info("No data yet. Add some entries to get started.")
+st.caption("Built with ❤️ for Spark Drivers. All data stays local or in your control.")
