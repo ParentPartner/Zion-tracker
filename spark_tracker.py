@@ -1,5 +1,7 @@
-# 🚀 Spark Delivery Tracker with Tip Baiter Tracking (Complete Edition)
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+# Your existing imports
 import streamlit as st
 import pandas as pd
 import re
@@ -11,6 +13,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import numpy as np
 from sklearn.linear_model import LinearRegression
+
 
 # === CONFIG & SETUP ===
 tz = pytz.timezone("US/Eastern")
