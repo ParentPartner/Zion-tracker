@@ -1,20 +1,27 @@
-# 🚗 Spark Delivery Tracker (Simplified Edition)
+# 🚀 Spark Delivery Tracker (Complete AI-Powered Edition)
 
 import streamlit as st
 import pandas as pd
 import re
 from datetime import datetime, date, time, timedelta
-from io import BytesIO
 import easyocr
 import pytz
 import plotly.express as px
 import firebase_admin
 from firebase_admin import credentials, firestore
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 # === CONFIG & SETUP ===
 tz = pytz.timezone("US/Eastern")
 TARGET_DAILY = 200
 ORDER_TYPES = ["Delivery", "Shop", "Pickup"]
+PERFORMANCE_LEVELS = {
+    "Excellent": {"min_epm": 3.0, "min_eph": 30},
+    "Good": {"min_epm": 2.0, "min_eph": 25},
+    "Fair": {"min_epm": 1.5, "min_eph": 20},
+    "Poor": {"min_epm": 0, "min_eph": 0}
+}
 
 if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase"]))
@@ -55,7 +62,7 @@ def load_all_deliveries():
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
 
-# === OCR PARSING ===
+# === ENHANCED OCR PARSING ===
 def extract_text_from_image(image_file):
     reader = easyocr.Reader(["en"], gpu=False)
     img_bytes = image_file.read()
@@ -64,25 +71,103 @@ def extract_text_from_image(image_file):
 
 def parse_screenshot_text(text_list):
     joined = " ".join(text_list).lower()
-    dollar = re.search(r"\$?(\d+(?:\.\d{1,2}))", joined)
-    miles = re.search(r"(\d+(?:\.\d))\s?mi", joined)
-    time_match = re.search(r"\b(\d{1,2}:\d{2})\b", joined)
-
-    ot = float(dollar.group(1)) if dollar else 0.0
-    ml = float(miles.group(1)) if miles else 0.0
+    
+    # Improved amount detection
+    dollar_matches = re.findall(r"\$?(\d{1,3}(?:,\d{3})*\.\d{2})", joined)
+    dollar_matches += re.findall(r"\$?(\d+\.\d{2})\b", joined)
+    total = max([float(amt.replace(',', '')) for amt in dollar_matches]) if dollar_matches else 0.0
+    
+    # Miles detection
+    miles = re.findall(r"(\d+(?:\.\d)?)\s?mi(?:les)?", joined)
+    ml = float(miles[0]) if miles else 0.0
+    
+    # Time parsing
+    time_match = re.search(r"\b(\d{1,2}):(\d{2})\s?([ap]m)?\b", joined, re.IGNORECASE)
     ts = datetime.now(tz)
     if time_match:
-        h, m = map(int, time_match.group(1).split(":"))
-        ts = ts.replace(hour=h, minute=m, second=0, microsecond=0)
-    
-    # Simplified order type detection
-    order_type = "Delivery"
-    if "shop" in joined or "s&d" in joined:
-        order_type = "Shop"
-    elif "pickup" in joined or "curbside" in joined:
-        order_type = "Pickup"
+        hour, minute, period = time_match.groups()
+        hour = int(hour)
+        minute = int(minute)
         
-    return ts, ot, ml, order_type
+        if period:
+            period = period.lower()
+            if period == "pm" and hour < 12:
+                hour += 12
+            elif period == "am" and hour == 12:
+                hour = 0
+        elif hour < 6 or hour > 21:
+            current_hour = ts.hour
+            if current_hour < 12:  # AM
+                if hour > 11:
+                    hour -= 12
+            else:  # PM
+                if hour < 12:
+                    hour += 12
+        
+        try:
+            ts = ts.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except ValueError:
+            pass
+    
+    # Order type detection
+    order_type = "Delivery"
+    type_keywords = {
+        "Shop": ["shop", "s&d", "shopping", "scan", "item"],
+        "Pickup": ["pickup", "curbside", "pick up", "store pickup"]
+    }
+    
+    for t, keywords in type_keywords.items():
+        if any(kw in joined for kw in keywords):
+            order_type = t
+            break
+    
+    return ts, total, ml, order_type
+
+# === AI ANALYTICS ===
+def calculate_performance_metrics(df):
+    metrics = {}
+    metrics["total_orders"] = len(df)
+    metrics["total_earnings"] = df["order_total"].sum()
+    
+    if "miles" in df.columns and df["miles"].sum() > 0:
+        metrics["epm"] = metrics["total_earnings"] / df["miles"].sum()
+    
+    if "timestamp" in df.columns and len(df) > 1:
+        df = df.sort_values("timestamp")
+        time_diff = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]).total_seconds() / 3600
+        if time_diff > 0:
+            metrics["eph"] = metrics["total_earnings"] / time_diff
+    
+    if "order_type" in df.columns:
+        metrics["type_distribution"] = df["order_type"].value_counts(normalize=True).to_dict()
+    
+    metrics["performance"] = "Unknown"
+    if "epm" in metrics and "eph" in metrics:
+        for level, criteria in PERFORMANCE_LEVELS.items():
+            if metrics["epm"] >= criteria["min_epm"] and metrics["eph"] >= criteria["min_eph"]:
+                metrics["performance"] = level
+                break
+    
+    return metrics
+
+def predict_earnings(df, target_date):
+    if df.empty or "date" not in df.columns:
+        return None
+    
+    df_daily = df.groupby("date")["order_total"].sum().reset_index()
+    df_daily["date_ordinal"] = df_daily["date"].apply(lambda d: d.toordinal())
+    
+    if len(df_daily) < 5:
+        return None
+    
+    X = df_daily["date_ordinal"].values.reshape(-1, 1)
+    y = df_daily["order_total"].values
+    model = LinearRegression().fit(X, y)
+    
+    target_ordinal = target_date.toordinal()
+    prediction = model.predict(np.array([[target_ordinal]]))[0]
+    
+    return max(0, prediction)
 
 # === STREAMLIT UI ===
 if "logged_in" not in st.session_state:
@@ -119,9 +204,15 @@ if last_ci_date != today:
         if not df_all.empty and "timestamp" in df_all.columns:
             df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
             yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
+        
+        # AI Prediction
+        prediction = predict_earnings(df_all, today)
+        
         col1, col2 = st.columns([2, 3])
         with col1:
             st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
+            if prediction:
+                st.metric("AI Predicted Earnings", f"${prediction:.2f}")
             goal = st.number_input("Today's Goal ($)", value=TARGET_DAILY, step=10)
         with col2:
             notes = st.text_area("Notes / Mindset for today")
@@ -155,11 +246,16 @@ else:
 uploaded = st.file_uploader("Upload screenshot (optional)", type=["png", "jpg", "jpeg"])
 parsed = None
 if uploaded:
-    with st.spinner("Analyzing…"):
+    with st.spinner("Analyzing with AI..."):
         text_list = extract_text_from_image(uploaded)
-        ts, ot, ml, order_type = parse_screenshot_text(text_list)
-        parsed = {"timestamp": ts, "order_total": ot, "miles": ml, "order_type": order_type}
-        st.success(f"OCR: ${ot:.2f} | {ml:.1f} mi @ {ts.strftime('%I:%M %p')} | Type: {order_type}")
+        ts, total, ml, order_type = parse_screenshot_text(text_list)
+        parsed = {
+            "timestamp": ts, 
+            "order_total": total,
+            "miles": ml, 
+            "order_type": order_type
+        }
+        st.success(f"AI Analysis: ${total:.2f} | {ml:.1f} mi @ {ts.strftime('%I:%M %p')} | Type: {order_type}")
 
 with st.form("entry"):
     st.subheader("Order Entry")
@@ -167,19 +263,20 @@ with st.form("entry"):
         default_time = parsed["timestamp"].time()
         default_date = parsed["timestamp"].date()
         default_type = parsed["order_type"]
+        default_total = parsed["order_total"]
     else:
         now = datetime.now(tz)
         default_time = now.time()
         default_date = today
         default_type = "Delivery"
+        default_total = 0.0
         
     selected_date = st.date_input("Date", value=default_date)
-    clean_default = time(default_time.hour, default_time.minute)
-    selected_time = st.time_input("Time", value=clean_default)
-    order_type = st.radio("Order Type", ORDER_TYPES, 
-                         index=ORDER_TYPES.index(default_type),
-                         horizontal=True)
-    ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
+    selected_time = st.time_input("Time", value=time(default_time.hour, default_time.minute))
+    order_type = st.radio("Order Type", ORDER_TYPES, index=ORDER_TYPES.index(default_type), horizontal=True)
+    
+    # Single total amount field
+    order_total = st.number_input("Order Total ($)", value=default_total, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
 
     if st.form_submit_button("Save"):
@@ -188,9 +285,9 @@ with st.form("entry"):
 
         entry = {
             "timestamp": aware_dt.isoformat(),
-            "order_total": ot,
+            "order_total": order_total,
             "miles": ml,
-            "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
+            "earnings_per_mile": round(order_total/ml, 2) if ml else 0.0,
             "hour": selected_time.hour,
             "username": user,
             "order_type": order_type
@@ -215,13 +312,13 @@ else:
     df_all = pd.DataFrame()
     today_df = pd.DataFrame()
 
-# Earnings Goal (Fixed to use daily check-in goal)
+# Earnings Goal
 daily_checkin = st.session_state.get("daily_checkin", {})
 goal = daily_checkin.get("goal", TARGET_DAILY)
 earned = today_df["order_total"].sum() if not today_df.empty else 0.0
 perc = min(earned / goal * 100, 100) if goal else 0
 
-# Calculate Earnings Per Hour (EPH)
+# Calculate Earnings Per Hour
 eph = None
 if "start_time" in daily_checkin and not today_df.empty:
     shift_duration = (datetime.now(tz) - daily_checkin["start_time"]).total_seconds() / 3600
@@ -229,7 +326,7 @@ if "start_time" in daily_checkin and not today_df.empty:
         eph = earned / shift_duration
 
 # Display Metrics
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     st.metric("Today's Earnings", f"${earned:.2f}", f"{perc:.0f}% of ${goal} goal")
 with col2:
@@ -237,10 +334,40 @@ with col2:
         st.metric("Earnings Per Hour", f"${eph:.2f}")
     else:
         st.metric("Earnings Per Hour", "Calculating...")
+with col3:
+    if not today_df.empty and "miles" in today_df.columns and today_df["miles"].sum() > 0:
+        epm = earned / today_df["miles"].sum()
+        st.metric("Earnings Per Mile", f"${epm:.2f}")
 
-# === Delete Entries ===
+# === AI INSIGHTS ===
+if not df_all.empty:
+    st.subheader("🧠 AI Insights")
+    
+    # Performance Rating
+    metrics = calculate_performance_metrics(today_df) if not today_df.empty else {}
+    if "performance" in metrics:
+        performance = metrics["performance"]
+        color = {"Excellent": "green", "Good": "blue", "Fair": "orange", "Poor": "red"}.get(performance, "gray")
+        st.markdown(f"### Performance Rating: :{color}[{performance}]")
+    
+    # Earnings Prediction
+    prediction = predict_earnings(df_all, today + timedelta(days=1))
+    if prediction:
+        st.metric("Tomorrow's Prediction", f"${prediction:.2f}")
+    
+    # Recommendations
+    st.write("### 💡 Recommendations")
+    if not today_df.empty:
+        if "eph" in metrics and metrics["eph"] < 20:
+            st.warning("Try working during busier hours to increase your earnings per hour")
+        elif "epm" in metrics and metrics["epm"] < 2.0:
+            st.warning("Focus on orders with shorter distances to improve earnings per mile")
+        else:
+            st.success("You're doing great! Keep up the good work.")
+
+# === DELETE ENTRIES ===
 st.subheader("🗑️ Delete Entries")
-selected_date = st.date_input("Select date to manage entries", value=today)
+selected_date = st.date_input("Select date to manage entries", value=today, key="delete_date")
 entries_to_show = df_all[df_all["date"] == selected_date] if not df_all.empty else pd.DataFrame()
 
 if not entries_to_show.empty:
@@ -267,41 +394,44 @@ if not entries_to_show.empty:
 else:
     st.info("No entries found for this date.")
 
-# === Analytics ===
-st.subheader("📈 Analytics & Trends")
+# === ANALYTICS DASHBOARD ===
+st.subheader("📊 Analytics Dashboard")
 
 if not df_all.empty:
-    # Daily Earnings
+    # Daily Earnings Trend
+    st.write("### 📅 Daily Earnings Trend")
     daily_totals = df_all.groupby("date")["order_total"].sum().reset_index()
-    fig = px.line(daily_totals, x="date", y="order_total", 
-                 title="📅 Daily Earnings", markers=True)
+    fig = px.line(daily_totals, x="date", y="order_total", markers=True)
+    fig.update_layout(xaxis_title="Date", yaxis_title="Total Earnings ($)")
     st.plotly_chart(fig, use_container_width=True)
 
     # Order Type Analysis
-    if "order_type" in df_all.columns:
-        col1, col2 = st.columns(2)
-        with col1:
-            type_counts = df_all["order_type"].value_counts().reset_index()
-            fig = px.pie(type_counts, values="count", names="order_type", 
-                         title="📊 Order Type Distribution", hole=0.3)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            type_earnings = df_all.groupby("order_type")["order_total"].sum().reset_index()
-            fig = px.bar(type_earnings, x="order_type", y="order_total", 
-                         title="💰 Earnings by Order Type",
-                         color="order_type")
-            st.plotly_chart(fig, use_container_width=True)
+    st.write("### 📦 Order Type Breakdown")
+    col1, col2 = st.columns(2)
+    with col1:
+        type_counts = df_all["order_type"].value_counts().reset_index()
+        fig = px.pie(type_counts, values="count", names="order_type", hole=0.4)
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        type_earnings = df_all.groupby("order_type")["order_total"].sum().reset_index()
+        fig = px.bar(type_earnings, x="order_type", y="order_total", color="order_type")
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Hourly Earnings
-    st.subheader("⏰ Hourly Performance")
-    hourly_earnings = df_all.groupby("hour_12")["order_total"].mean().reset_index()
-    fig = px.bar(hourly_earnings, x="hour_12", y="order_total", 
-                 title="Average Earnings by Hour",
-                 labels={"hour_12": "Hour", "order_total": "Avg $"})
+    # Hourly Performance
+    st.write("### ⏰ Hourly Earnings")
+    hourly_earnings = df_all.groupby("hour")["order_total"].mean().reset_index()
+    hourly_earnings["hour_str"] = hourly_earnings["hour"].apply(lambda h: f"{h % 12 or 12} {'AM' if h < 12 else 'PM'}")
+    fig = px.bar(hourly_earnings, x="hour_str", y="order_total")
     st.plotly_chart(fig, use_container_width=True)
 
+    # Weekly Heatmap
+    st.write("### 📆 Weekly Performance Heatmap")
+    heat_data = df_all.groupby(["day_of_week", "hour"])["order_total"].mean().unstack()
+    days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    heat_data = heat_data.reindex(days_order)
+    fig = px.imshow(heat_data, color_continuous_scale="Viridis")
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Do a few deliveries to unlock analytics.")
+    st.info("Complete a few deliveries to unlock analytics")
 
-st.caption("🏁 Spark Delivery Tracker | Data stays 100% yours.")
+st.caption("🧠 AI-Powered Spark Tracker v2.0 | Data stays 100% yours.")
