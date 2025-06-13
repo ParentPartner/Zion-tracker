@@ -9,3 +9,4 @@ gspread-dataframe
 plotly
 pytz
 firebase-admin
+scikit-learn
