@@ -14,6 +14,7 @@ from firebase_admin import credentials, firestore
 # === CONFIG & SETUP ===
 tz = pytz.timezone("US/Eastern")
 TARGET_DAILY = 200
+ORDER_TYPES = ["Delivery", "Shop", "Pickup"]
 
 if not firebase_admin._apps:
     cred = credentials.Certificate(dict(st.secrets["firebase"]))
@@ -66,6 +67,13 @@ def parse_screenshot_text(text_list):
     dollar = re.search(r"\$?(\d+(?:\.\d{1,2}))", joined)
     miles = re.search(r"(\d+(?:\.\d))\s?mi", joined)
     time_match = re.search(r"\b(\d{1,2}:\d{2})\b", joined)
+    
+    # Attempt to detect order type from OCR text
+    order_type = "Delivery"  # Default
+    if "shop" in joined or "s&d" in joined:
+        order_type = "Shop"
+    elif "pickup" in joined or "curbside" in joined:
+        order_type = "Pickup"
 
     ot = float(dollar.group(1)) if dollar else 0.0
     ml = float(miles.group(1)) if miles else 0.0
@@ -73,7 +81,7 @@ def parse_screenshot_text(text_list):
     if time_match:
         h, m = map(int, time_match.group(1).split(":"))
         ts = ts.replace(hour=h, minute=m, second=0, microsecond=0)
-    return ts, ot, ml
+    return ts, ot, ml, order_type
 
 # === STREAMLIT UI ===
 if "logged_in" not in st.session_state:
@@ -143,9 +151,9 @@ parsed = None
 if uploaded:
     with st.spinner("Analyzing…"):
         text_list = extract_text_from_image(uploaded)
-        ts, ot, ml = parse_screenshot_text(text_list)
-        parsed = {"timestamp": ts, "order_total": ot, "miles": ml}
-        st.success(f"OCR: ${ot:.2f} | {ml:.1f} mi @ {ts.strftime('%I:%M %p')}")
+        ts, ot, ml, order_type = parse_screenshot_text(text_list)
+        parsed = {"timestamp": ts, "order_total": ot, "miles": ml, "order_type": order_type}
+        st.success(f"OCR: ${ot:.2f} | {ml:.1f} mi @ {ts.strftime('%I:%M %p')} | Type: {order_type}")
 
 with st.form("entry"):
     st.subheader("Order Entry")
@@ -153,10 +161,12 @@ with st.form("entry"):
     if parsed:
         default_time = parsed["timestamp"].time()
         default_date = parsed["timestamp"].date()
+        default_type = parsed["order_type"]
     else:
         now = datetime.now(tz)
         default_time = now.time()
         default_date = today
+        default_type = "Delivery"
         
     # Add date input for manual selection
     selected_date = st.date_input("Date", value=default_date)
@@ -164,6 +174,11 @@ with st.form("entry"):
     # Create a clean default time without seconds/microseconds
     clean_default = time(default_time.hour, default_time.minute)
     selected_time = st.time_input("Time", value=clean_default)
+    
+    # Order type selection
+    order_type = st.radio("Order Type", ORDER_TYPES, 
+                          index=ORDER_TYPES.index(default_type),
+                          horizontal=True)
     
     ot = st.number_input("Order Total ($)", value=parsed["order_total"] if parsed else 0.0, step=0.01)
     ml = st.number_input("Miles Driven", value=parsed["miles"] if parsed else 0.0, step=0.1)
@@ -179,11 +194,12 @@ with st.form("entry"):
             "miles": ml,
             "earnings_per_mile": round(ot/ml, 2) if ml else 0.0,
             "hour": selected_time.hour,
-            "username": user
+            "username": user,
+            "order_type": order_type
         }
 
         add_entry_to_firestore(entry)
-        st.success(f"Saved entry at {aware_dt.strftime('%I:%M %p')}!")
+        st.success(f"Saved {order_type} entry at {aware_dt.strftime('%I:%M %p')}!")
         st.rerun()
 
 # Load + Filter
@@ -217,6 +233,7 @@ if not entries_to_show.empty:
         col1, col2, col3 = st.columns([3, 2, 1])
         with col1:
             st.write(f"🕒 {row['timestamp'].strftime('%I:%M %p')} | 💵 ${row['order_total']:.2f} | 🚗 {row['miles']} mi")
+            st.caption(f"Type: {row.get('order_type', 'Delivery')}")
         with col2:
             st.write(f"EPM: ${row['earnings_per_mile']:.2f}")
         with col3:
@@ -247,13 +264,61 @@ if not df_all.empty:
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        avg_by_hour = df_all.groupby("hour_12")["order_total"].mean().reset_index()
-        fig = px.bar(avg_by_hour, x="hour_12", y="order_total", title="⏰ Avg Earnings by Hour",
-                     labels={"hour_12": "Hour", "order_total": "Avg $"})
-        fig.update_layout(xaxis_categoryorder="array", xaxis_categoryarray=avg_by_hour["hour_12"],
-                          template="plotly_white")
+        # Order Type Distribution (Pie Chart)
+        if "order_type" in df_all.columns:
+            type_counts = df_all["order_type"].value_counts().reset_index()
+            type_counts.columns = ["Order Type", "Count"]
+            fig = px.pie(type_counts, values="Count", names="Order Type", 
+                          title="📊 Order Type Distribution",
+                          hole=0.3)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No order type data available")
+
+# New section for order type analytics
+if not df_all.empty and "order_type" in df_all.columns:
+    st.subheader("📦 Order Type Analytics")
+    
+    # Order Type Earnings Comparison
+    type_earnings = df_all.groupby("order_type")["order_total"].agg(["sum", "mean", "count"]).reset_index()
+    type_earnings.columns = ["Order Type", "Total Earnings", "Avg per Order", "Order Count"]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.dataframe(type_earnings.style.format({
+            "Total Earnings": "${:,.2f}",
+            "Avg per Order": "${:,.2f}"
+        }), height=200)
+    
+    with col2:
+        fig = px.bar(type_earnings, x="Order Type", y="Total Earnings", 
+                     title="💰 Total Earnings by Order Type",
+                     color="Order Type")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Hourly Earnings by Order Type
+    st.subheader("⏰ Hourly Earnings by Order Type")
+    hourly_type = df_all.groupby(["hour", "order_type"])["order_total"].mean().reset_index()
+    hourly_type["hour_12"] = hourly_type["hour"].apply(lambda h: f"{h % 12 or 12} {'AM' if h < 12 else 'PM'}")
+    
+    fig = px.line(hourly_type, x="hour", y="order_total", color="order_type",
+                  title="Average Earnings by Hour and Order Type",
+                  labels={"hour": "Hour (24h)", "order_total": "Avg Earnings ($)"})
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Efficiency by Order Type
+    if "miles" in df_all.columns:
+        df_all["efficiency"] = df_all["order_total"] / df_all["miles"].replace(0, 0.01)
+        efficiency = df_all.groupby("order_type")["efficiency"].mean().reset_index()
+        efficiency.columns = ["Order Type", "Avg $/Mile"]
+        
+        fig = px.bar(efficiency, x="Order Type", y="Avg $/Mile", 
+                     title="🚗 Earnings Per Mile by Order Type",
+                     color="Order Type")
         st.plotly_chart(fig, use_container_width=True)
 
+# Existing analytics
+if not df_all.empty:
     st.header("🤖 Smart Suggestions")
     hour_avg = df_all.groupby("hour")["order_total"].mean()
     best_hour = hour_avg.idxmax()
@@ -263,15 +328,19 @@ if not df_all.empty:
     best_day = weekday_avg.idxmax()
     best_day_val = weekday_avg.max()
 
-    df_all["efficiency"] = df_all["order_total"] / df_all["miles"].replace(0, 0.01)
-    best_eff = df_all["efficiency"].median()
+    if "miles" in df_all.columns:
+        df_all["efficiency"] = df_all["order_total"] / df_all["miles"].replace(0, 0.01)
+        best_eff = df_all["efficiency"].median()
+        eff_tip = f" | **🚗 Efficiency Tip:** Aim for **${best_eff:.2f}/mile**"
+    else:
+        eff_tip = ""
 
     st.markdown(f"""
     ✅ Based on your delivery history:
 
     - **📆 Best day:** `{best_day}` – avg **${best_day_val:.2f}**/order  
     - **⏰ Best hour:** `{best_hour % 12 or 12}:00 {'AM' if best_hour < 12 else 'PM'}` – avg **${best_hour_val:.2f}**  
-    - **🚗 Efficiency Tip:** Aim for **${best_eff:.2f}/mile**
+    {eff_tip}
     """)
 
     if best_day_val > 25 and best_hour_val > 20:
