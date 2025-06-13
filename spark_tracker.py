@@ -1,4 +1,4 @@
-# 🚀 Spark Delivery Tracker (Complete AI-Powered Edition)
+# 🚀 Spark Delivery Tracker with Tip Baiter Tracking (Complete Edition)
 
 import streamlit as st
 import pandas as pd
@@ -61,6 +61,17 @@ def load_all_deliveries():
     if not df.empty and "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
+
+def add_tip_baiter_to_firestore(entry):
+    db.collection("tip_baiters").add(entry)
+
+def load_all_tip_baiters():
+    data = []
+    for doc in db.collection("tip_baiters").stream():
+        entry = doc.to_dict()
+        entry["id"] = doc.id  # Store document ID for updates/deletion
+        data.append(entry)
+    return pd.DataFrame(data)
 
 # === ENHANCED OCR PARSING ===
 def extract_text_from_image(image_file):
@@ -169,6 +180,86 @@ def predict_earnings(df, target_date):
     
     return max(0, prediction)
 
+# === TIP BAITER TRACKER ===
+def tip_baiter_tracker():
+    st.subheader("🚨 Tip Baiter Tracker")
+    
+    with st.expander("➕ Add New Tip Baiter", expanded=False):
+        with st.form("tip_baiter_form"):
+            name = st.text_input("Name (Required)")
+            address = st.text_input("Address (Optional)")
+            date_baited = st.date_input("Date", value=today)
+            amount_baited = st.number_input("Amount Baited ($)", value=0.0, step=0.01)
+            notes = st.text_area("Notes")
+            
+            if st.form_submit_button("Save Tip Baiter"):
+                if not name:
+                    st.error("Name is required!")
+                else:
+                    entry = {
+                        "name": name.strip(),
+                        "address": address.strip() if address else "",
+                        "date": date_baited.isoformat(),
+                        "amount": float(amount_baited),
+                        "notes": notes.strip(),
+                        "username": user,
+                        "timestamp": datetime.now(tz).isoformat()
+                    }
+                    add_tip_baiter_to_firestore(entry)
+                    st.success("Tip baiter saved!")
+                    st.rerun()
+    
+    st.subheader("📋 Your Tip Baiters")
+    tip_baiters_df = load_all_tip_baiters()
+    
+    if not tip_baiters_df.empty:
+        tip_baiters_df = tip_baiters_df[tip_baiters_df["username"] == user]
+        tip_baiters_df["date"] = pd.to_datetime(tip_baiters_df["date"])
+        
+        # Show summary stats
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Tip Baiters", len(tip_baiters_df))
+        with col2:
+            st.metric("Total Amount Baited", f"${tip_baiters_df['amount'].sum():.2f}")
+        with col3:
+            last_baiter = tip_baiters_df.sort_values("date", ascending=False).iloc[0]
+            st.metric("Most Recent", last_baiter["date"].strftime("%m/%d/%y"))
+        
+        # Search and filter
+        search_col, filter_col = st.columns(2)
+        with search_col:
+            search_term = st.text_input("Search by name or address")
+        with filter_col:
+            date_filter = st.selectbox("Filter by date", ["All", "Last 7 days", "Last 30 days", "Last 90 days"])
+        
+        # Apply filters
+        if search_term:
+            tip_baiters_df = tip_baiters_df[
+                tip_baiters_df["name"].str.contains(search_term, case=False) |
+                tip_baiters_df["address"].str.contains(search_term, case=False)
+            ]
+        
+        if date_filter != "All":
+            days = 7 if date_filter == "Last 7 days" else 30 if date_filter == "Last 30 days" else 90
+            cutoff_date = today - timedelta(days=days)
+            tip_baiters_df = tip_baiters_df[tip_baiters_df["date"] >= pd.to_datetime(cutoff_date)]
+        
+        # Display table with edit/delete options
+        for _, row in tip_baiters_df.sort_values("date", ascending=False).iterrows():
+            with st.expander(f"{row['name']} - {row['date'].strftime('%m/%d/%y')} - ${row['amount']:.2f}"):
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.write(f"**Address:** {row['address'] or 'Not provided'}")
+                    st.write(f"**Notes:** {row['notes'] or 'No notes'}")
+                with col2:
+                    if st.button("🗑️ Delete", key=f"del_tb_{row['id']}"):
+                        db.collection("tip_baiters").document(row["id"]).delete()
+                        st.success("Tip baiter removed!")
+                        st.rerun()
+    else:
+        st.info("No tip baiters recorded yet")
+
 # === STREAMLIT UI ===
 if "logged_in" not in st.session_state:
     st.title("🔐 Spark Tracker Login")
@@ -241,6 +332,9 @@ if st.session_state.get("daily_checkin", {}).get("working") is False:
     st.stop()
 else:
     st.markdown(st.session_state.get("daily_checkin", {}).get("notes", ""))
+
+# Add the Tip Baiter Tracker section
+tip_baiter_tracker()
 
 # OCR + Entry
 uploaded = st.file_uploader("Upload screenshot (optional)", type=["png", "jpg", "jpeg"])
