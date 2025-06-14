@@ -1,7 +1,7 @@
+# 🚀 Spark Delivery Tracker (Complete Fixed Version)
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-# Your existing imports
 import streamlit as st
 import pandas as pd
 import re
@@ -14,9 +14,37 @@ from firebase_admin import credentials, firestore
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
+# ========== FIREBASE INITIALIZATION ==========
+if not firebase_admin._apps:
+    # Initialize only if not already initialized
+    try:
+        # Convert Streamlit secrets to proper dictionary format
+        firebase_config = {
+            "type": st.secrets["firebase"]["type"],
+            "project_id": st.secrets["firebase"]["project_id"],
+            "private_key_id": st.secrets["firebase"]["private_key_id"],
+            "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
+            "client_email": st.secrets["firebase"]["client_email"],
+            "client_id": st.secrets["firebase"]["client_id"],
+            "auth_uri": st.secrets["firebase"]["auth_uri"],
+            "token_uri": st.secrets["firebase"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
+        }
+        cred = credentials.Certificate(firebase_config)
+        # Initialize with a name to prevent duplicate app errors
+        firebase_admin.initialize_app(cred, {
+            'databaseURL': st.secrets["firebase"]["databaseURL"]
+        }, name='spark-tracker')
+    except Exception as e:
+        st.error(f"Firebase initialization failed: {str(e)}")
+        st.stop()
 
-# === CONFIG & SETUP ===
-tz = pytz.timezone("US/Eastern")
+# Get Firestore client
+db = firestore.client()
+
+# ========== APP CONFIGURATION ==========
+TZ = pytz.timezone("US/Eastern")
 TARGET_DAILY = 200
 ORDER_TYPES = ["Delivery", "Shop", "Pickup"]
 PERFORMANCE_LEVELS = {
@@ -26,37 +54,32 @@ PERFORMANCE_LEVELS = {
     "Poor": {"min_epm": 0, "min_eph": 0}
 }
 
-if not firebase_admin._apps:
-    cred = credentials.Certificate(dict(st.secrets["firebase"]))
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
-
+# ========== HELPER FUNCTIONS ==========
 def get_current_date() -> date:
-    return datetime.now(tz).date()
+    return datetime.now(TZ).date()
 
-# === FIRESTORE HELPERS ===
-def get_user(username):
+def get_user(username: str) -> dict:
     doc = db.collection("users").document(username).get()
     return doc.to_dict() if doc.exists else None
 
-def validate_login(username, password):
+def validate_login(username: str, password: str) -> bool:
     user = get_user(username)
     return user and user.get("password") == password
 
-def update_last_checkin(username, date_str):
+def update_last_checkin(username: str, date_str: str) -> None:
     db.collection("users").document(username).update({"last_checkin_date": date_str})
 
-def init_user(username, password="password"):
+def init_user(username: str, password: str = "password") -> None:
     if not get_user(username):
         db.collection("users").document(username).set({
             "password": password,
             "last_checkin_date": ""
         })
 
-def add_entry_to_firestore(entry):
+def add_entry_to_firestore(entry: dict) -> None:
     db.collection("deliveries").add(entry)
 
-def load_all_deliveries():
+def load_all_deliveries() -> pd.DataFrame:
     data = []
     for doc in db.collection("deliveries").stream():
         data.append(doc.to_dict())
@@ -65,10 +88,10 @@ def load_all_deliveries():
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
 
-def add_tip_baiter_to_firestore(entry):
+def add_tip_baiter_to_firestore(entry: dict) -> None:
     db.collection("tip_baiters").add(entry)
 
-def load_all_tip_baiters():
+def load_all_tip_baiters() -> pd.DataFrame:
     data = []
     for doc in db.collection("tip_baiters").stream():
         entry = doc.to_dict()
@@ -76,14 +99,12 @@ def load_all_tip_baiters():
         data.append(entry)
     return pd.DataFrame(data)
 
-# === ENHANCED OCR PARSING ===
-def extract_text_from_image(image_file):
-    reader = easyocr.Reader(["en"], gpu=False)
-    img_bytes = image_file.read()
-    image_file.seek(0)
-    return reader.readtext(img_bytes, detail=0)
+# OCR Reader (cached for performance)
+@st.cache_resource
+def get_ocr_reader():
+    return easyocr.Reader(["en"], gpu=False)
 
-def parse_screenshot_text(text_list):
+def parse_screenshot_text(text_list: list) -> tuple:
     joined = " ".join(text_list).lower()
     
     # Improved amount detection
@@ -97,7 +118,7 @@ def parse_screenshot_text(text_list):
     
     # Time parsing
     time_match = re.search(r"\b(\d{1,2}):(\d{2})\s?([ap]m)?\b", joined, re.IGNORECASE)
-    ts = datetime.now(tz)
+    ts = datetime.now(TZ)
     if time_match:
         hour, minute, period = time_match.groups()
         hour = int(hour)
@@ -137,8 +158,8 @@ def parse_screenshot_text(text_list):
     
     return ts, total, ml, order_type
 
-# === AI ANALYTICS ===
-def calculate_performance_metrics(df):
+# ========== ANALYTICS FUNCTIONS ==========
+def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     metrics = {}
     metrics["total_orders"] = len(df)
     metrics["total_earnings"] = df["order_total"].sum()
@@ -164,7 +185,7 @@ def calculate_performance_metrics(df):
     
     return metrics
 
-def predict_earnings(df, target_date):
+def predict_earnings(df: pd.DataFrame, target_date: date) -> Optional[float]:
     if df.empty or "date" not in df.columns:
         return None
     
@@ -183,7 +204,7 @@ def predict_earnings(df, target_date):
     
     return max(0, prediction)
 
-# === TIP BAITER TRACKER ===
+# ========== STREAMLIT UI COMPONENTS ==========
 def tip_baiter_tracker():
     st.subheader("🚨 Tip Baiter Tracker")
     
@@ -206,7 +227,7 @@ def tip_baiter_tracker():
                         "amount": float(amount_baited),
                         "notes": notes.strip(),
                         "username": user,
-                        "timestamp": datetime.now(tz).isoformat()
+                        "timestamp": datetime.now(TZ).isoformat()
                     }
                     add_tip_baiter_to_firestore(entry)
                     st.success("Tip baiter saved!")
@@ -263,7 +284,7 @@ def tip_baiter_tracker():
     else:
         st.info("No tip baiters recorded yet")
 
-# === STREAMLIT UI ===
+# ========== MAIN APPLICATION FLOW ==========
 if "logged_in" not in st.session_state:
     st.title("🔐 Spark Tracker Login")
     username = st.text_input("Username").strip().lower()
@@ -315,7 +336,7 @@ if last_ci_date != today:
                 "working": True, 
                 "goal": goal, 
                 "notes": notes,
-                "start_time": datetime.now(tz)
+                "start_time": datetime.now(TZ)
             }
             st.session_state["last_checkin_date"] = today.isoformat()
             update_last_checkin(user, today.isoformat())
@@ -344,7 +365,8 @@ uploaded = st.file_uploader("Upload screenshot (optional)", type=["png", "jpg", 
 parsed = None
 if uploaded:
     with st.spinner("Analyzing with AI..."):
-        text_list = extract_text_from_image(uploaded)
+        reader = get_ocr_reader()
+        text_list = reader.readtext(uploaded.read(), detail=0)
         ts, total, ml, order_type = parse_screenshot_text(text_list)
         parsed = {
             "timestamp": ts, 
@@ -362,7 +384,7 @@ with st.form("entry"):
         default_type = parsed["order_type"]
         default_total = parsed["order_total"]
     else:
-        now = datetime.now(tz)
+        now = datetime.now(TZ)
         default_time = now.time()
         default_date = today
         default_type = "Delivery"
@@ -378,7 +400,7 @@ with st.form("entry"):
 
     if st.form_submit_button("Save"):
         naive_dt = datetime.combine(selected_date, selected_time)
-        aware_dt = tz.localize(naive_dt)
+        aware_dt = TZ.localize(naive_dt)
 
         entry = {
             "timestamp": aware_dt.isoformat(),
@@ -387,7 +409,8 @@ with st.form("entry"):
             "earnings_per_mile": round(order_total/ml, 2) if ml else 0.0,
             "hour": selected_time.hour,
             "username": user,
-            "order_type": order_type
+            "order_type": order_type,
+            "date": selected_date.isoformat()
         }
 
         add_entry_to_firestore(entry)
@@ -418,7 +441,7 @@ perc = min(earned / goal * 100, 100) if goal else 0
 # Calculate Earnings Per Hour
 eph = None
 if "start_time" in daily_checkin and not today_df.empty:
-    shift_duration = (datetime.now(tz) - daily_checkin["start_time"]).total_seconds() / 3600
+    shift_duration = (datetime.now(TZ) - daily_checkin["start_time"]).total_seconds() / 3600
     if shift_duration > 0:
         eph = earned / shift_duration
 
