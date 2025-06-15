@@ -541,108 +541,69 @@ def login_section() -> Optional[str]:
     return None
 
 def daily_checkin(username: str) -> bool:
-    """Handle daily check-in process and return whether user is working today."""
+    """Handle daily check-in process."""
     today = get_current_date()
-    user_data = get_user(username)
     
-    # Check Firestore for existing check-in
-    if user_data and "last_checkin_date" in user_data:
-        try:
-            last_ci_date = datetime.strptime(user_data["last_checkin_date"], "%Y-%m-%d").date()
-            if last_ci_date == today:
-                # Already checked in today - use stored data
-                is_working = user_data.get("is_working", False)
-                checkin_time = datetime.strptime(user_data["checkin_time"], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=tz) if user_data.get("checkin_time") else datetime.now(tz)
-                
-                # Store in session state
-                st.session_state["daily_checkin"] = {
-                    "working": is_working,
-                    "goal": user_data.get("today_goal", TARGET_DAILY),
-                    "notes": user_data.get("today_notes", ""),
-                    "start_time": checkin_time
-                }
-                
-                # Show status change option if not working
-                if not is_working:
-                    if st.button("🚀 Actually, I want to work today!"):
-                        update_user_data(username, {
-                            "is_working": True,
-                            "checkin_time": datetime.now(tz).isoformat(),
-                            "today_goal": TARGET_DAILY,
-                            "today_notes": "Changed mind - decided to work"
-                        })
-                        st.rerun()
-                
-                return is_working
-        except ValueError:
-            pass  # Handle date parsing error
+    # Load user data with fallback
+    user_data = get_user(username) or {}
+    last_ci_str = user_data.get("last_checkin_date", "")
     
-    # If we get here, we need to do the check-in
+    # Simple string comparison (no parsing needed)
+    if last_ci_str == today.isoformat():
+        # Already checked in today
+        is_working = user_data.get("is_working", False)
+        
+        # Store in session state
+        st.session_state.daily_checkin = {
+            "working": is_working,
+            "goal": user_data.get("today_goal", TARGET_DAILY),
+            "notes": user_data.get("today_notes", "")
+        }
+        
+        # Allow changing mind if not working
+        if not is_working and st.button("🚀 Actually, I want to work today"):
+            update_user_data(username, {
+                "is_working": True,
+                "today_goal": TARGET_DAILY,
+                "today_notes": "Changed mind - decided to work"
+            })
+            st.rerun()
+            
+        return is_working
+    
+    # --- New Check-in Flow ---
     st.header("📅 Daily Check‑In")
-    
     working = st.radio("Working today?", ("Yes", "No"), index=0, horizontal=True)
     
     if working == "Yes":
-        df_all = load_user_deliveries(username)
-        yesterday = today - timedelta(days=1)
-        yesterday_sum = 0.0
+        goal = st.number_input("Today's Goal ($)", value=TARGET_DAILY)
+        notes = st.text_area("Notes")
         
-        if not df_all.empty and "timestamp" in df_all.columns:
-            df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
-            yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
-        
-        prediction = predict_earnings(df_all, today)
-        
-        with st.container():
-            col1, col2 = st.columns([2, 3])
-            with col1:
-                st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
-                if prediction:
-                    st.metric("AI Predicted Earnings", f"${prediction:.2f}")
-                
-                goal_suggestion = max(TARGET_DAILY, round(yesterday_sum * 1.1) if yesterday_sum > 0 else TARGET_DAILY)
-                goal = st.number_input("Today's Goal ($)", 
-                                      value=goal_suggestion, 
-                                      step=10,
-                                      min_value=0)
-            
-            with col2:
-                notes = st.text_area("Notes / Mindset for today",
-                                   placeholder="Enter your goals, mindset, or any important notes for today...")
-        
-        if st.button("Start Tracking", type="primary"):
-            checkin_time = datetime.now(tz)
+        if st.button("Start Tracking"):
             update_user_data(username, {
                 "last_checkin_date": today.isoformat(),
+                "is_working": True,
                 "today_goal": goal,
-                "today_notes": notes,
-                "checkin_time": checkin_time.isoformat(),
-                "is_working": True
+                "today_notes": notes
             })
-            
-            st.session_state["daily_checkin"] = {
-                "working": True, 
-                "goal": goal, 
-                "notes": notes,
-                "start_time": checkin_time
+            st.session_state.daily_checkin = {
+                "working": True,
+                "goal": goal,
+                "notes": notes
             }
             st.rerun()
-    
-    else:  # User selected "No"
-        if st.button("Take the day off", type="primary"):
+    else:
+        if st.button("Take the day off"):
             update_user_data(username, {
                 "last_checkin_date": today.isoformat(),
+                "is_working": False,
                 "today_goal": 0,
-                "today_notes": "Day off",
-                "checkin_time": datetime.now(tz).isoformat(),
-                "is_working": False
+                "today_notes": "Day off"
             })
-            
-            st.session_state["daily_checkin"] = {
+            st.session_state.daily_checkin = {
                 "working": False,
                 "goal": 0,
-                "notes": "Day off",
-                "start_time": datetime.now(tz)
+                "notes": "Day off"
             }
             st.rerun()
     
