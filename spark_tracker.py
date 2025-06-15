@@ -11,6 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 from typing import List, Dict, Optional, Tuple
 
 # === CONFIG & SETUP ===
@@ -38,49 +39,84 @@ db = firestore.client()
 def get_current_date() -> date:
     return datetime.now(tz).date()
 
-
 # === FIRESTORE HELPERS ===
 def get_user(username: str) -> Optional[Dict]:
-    doc = db.collection("users").document(username).get()
-    return doc.to_dict() if doc.exists else None
+    try:
+        doc = db.collection("users").document(username).get()
+        return doc.to_dict() if doc.exists else None
+    except Exception as e:
+        st.error(f"Error accessing user data: {e}")
+        return None
 
 def validate_login(username: str, password: str) -> bool:
     user = get_user(username)
-    return user and user.get("password") == password
+    if not user:
+        return False
+    return user.get("password") == password
 
-def update_last_checkin(username: str, date_str: str) -> None:
-    db.collection("users").document(username).update({"last_checkin_date": date_str})
+def update_user_data(username: str, data: Dict) -> None:
+    try:
+        db.collection("users").document(username).update(data)
+    except Exception as e:
+        st.error(f"Error updating user data: {e}")
 
 def init_user(username: str, password: str = "password") -> None:
     if not get_user(username):
-        db.collection("users").document(username).set({
-            "password": password,
-            "last_checkin_date": "",
-            "incentives": []
-        })
+        try:
+            db.collection("users").document(username).set({
+                "password": password,
+                "last_checkin_date": "",
+                "incentives": [],
+                "today_goal": TARGET_DAILY,
+                "today_notes": "",
+                "is_working": False,
+                "checkin_time": None,
+                "created_at": datetime.now(tz).isoformat()
+            })
+        except Exception as e:
+            st.error(f"Error creating user: {e}")
 
 def add_entry_to_firestore(entry: Dict) -> None:
-    db.collection("deliveries").add(entry)
+    try:
+        entry["created_at"] = datetime.now(tz).isoformat()
+        db.collection("deliveries").add(entry)
+    except Exception as e:
+        st.error(f"Error saving delivery: {e}")
 
 def load_user_deliveries(username: str) -> pd.DataFrame:
-    docs = db.collection("deliveries").where("username", "==", username).stream()
-    data = [doc.to_dict() for doc in docs]
-    return pd.DataFrame(data) if data else pd.DataFrame()
+    try:
+        docs = db.collection("deliveries").where("username", "==", username).stream()
+        data = [doc.to_dict() for doc in docs]
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading deliveries: {e}")
+        return pd.DataFrame()
 
 def add_tip_baiter_to_firestore(entry: Dict) -> None:
-    db.collection("tip_baiters").add(entry)
+    try:
+        entry["created_at"] = datetime.now(tz).isoformat()
+        db.collection("tip_baiters").add(entry)
+    except Exception as e:
+        st.error(f"Error saving tip baiter: {e}")
 
 def load_user_tip_baiters(username: str) -> pd.DataFrame:
-    docs = db.collection("tip_baiters").where("username", "==", username).stream()
-    data = []
-    for doc in docs:
-        entry = doc.to_dict()
-        entry["id"] = doc.id
-        data.append(entry)
-    return pd.DataFrame(data) if data else pd.DataFrame()
+    try:
+        docs = db.collection("tip_baiters").where("username", "==", username).stream()
+        data = []
+        for doc in docs:
+            entry = doc.to_dict()
+            entry["id"] = doc.id
+            data.append(entry)
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading tip baiters: {e}")
+        return pd.DataFrame()
 
 def save_incentives(username: str, incentives: List[Dict]) -> None:
-    db.collection("users").document(username).update({"incentives": incentives})
+    try:
+        db.collection("users").document(username).update({"incentives": incentives})
+    except Exception as e:
+        st.error(f"Error saving incentives: {e}")
 
 # === INCENTIVE MANAGEMENT ===
 def manage_incentives(username: str) -> None:
@@ -494,8 +530,7 @@ def login_section() -> Optional[str]:
         if validate_login(username, password):
             st.session_state.update({
                 "logged_in": True,
-                "username": username,
-                "last_checkin_date": get_user(username).get("last_checkin_date", "")
+                "username": username
             })
             st.rerun()
         else:
@@ -508,65 +543,94 @@ def login_section() -> Optional[str]:
 def daily_checkin(username: str) -> bool:
     """Handle daily check-in process and return whether user is working today."""
     today = get_current_date()
-    last_ci = st.session_state.get("last_checkin_date", "")
-    last_ci_date = datetime.strptime(last_ci, "%Y-%m-%d").date() if last_ci else None
+    user_data = get_user(username)
     
-    if last_ci_date != today:
-        st.header("📅 Daily Check‑In")
+    # Check Firestore for existing check-in first
+    if user_data and "last_checkin_date" in user_data:
+        try:
+            last_ci_date = datetime.strptime(user_data["last_checkin_date"], "%Y-%m-%d").date()
+            if last_ci_date == today:
+                # Already checked in today - use Firestore data
+                if "daily_checkin" not in st.session_state:
+                    st.session_state["daily_checkin"] = {
+                        "working": user_data.get("is_working", False),
+                        "goal": user_data.get("today_goal", TARGET_DAILY),
+                        "notes": user_data.get("today_notes", ""),
+                        "start_time": datetime.strptime(user_data["checkin_time"], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=tz) 
+                                       if user_data.get("checkin_time") else datetime.now(tz)
+                    }
+                return st.session_state["daily_checkin"]["working"]
+        except ValueError:
+            pass  # Handle date parsing error
+    
+    # If no check-in today, show the check-in form
+    st.header("📅 Daily Check‑In")
+    
+    working = st.radio("Working today?", ("Yes", "No"), index=0, horizontal=True)
+    
+    if working == "Yes":
+        df_all = load_user_deliveries(username)
+        yesterday = today - timedelta(days=1)
+        yesterday_sum = 0.0
         
-        working = st.radio("Working today?", ("Yes", "No"), index=0, horizontal=True)
+        if not df_all.empty and "timestamp" in df_all.columns:
+            df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
+            yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
         
-        if working == "Yes":
-            df_all = load_user_deliveries(username)
-            yesterday = today - timedelta(days=1)
-            yesterday_sum = 0.0
-            
-            if not df_all.empty and "timestamp" in df_all.columns:
-                df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
-                yesterday_sum = df_all[df_all["timestamp"].dt.date == yesterday]["order_total"].sum()
-            
-            # Enhanced prediction with multiple models
-            prediction = predict_earnings(df_all, today)
-            
-            with st.container():
-                col1, col2 = st.columns([2, 3])
-                with col1:
-                    st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
-                    if prediction:
-                        st.metric("AI Predicted Earnings", f"${prediction:.2f}")
-                    
-                    # Smart goal suggestion
-                    goal_suggestion = max(TARGET_DAILY, round(yesterday_sum * 1.1) if yesterday_sum > 0 else TARGET_DAILY)
-                    goal = st.number_input("Today's Goal ($)", 
-                                         value=goal_suggestion, 
-                                         step=10,
-                                         min_value=0)
+        prediction = predict_earnings(df_all, today)
+        
+        with st.container():
+            col1, col2 = st.columns([2, 3])
+            with col1:
+                st.metric("Earnings Yesterday", f"${yesterday_sum:.2f}")
+                if prediction:
+                    st.metric("AI Predicted Earnings", f"${prediction:.2f}")
                 
-                with col2:
-                    notes = st.text_area("Notes / Mindset for today",
-                                       placeholder="Enter your goals, mindset, or any important notes for today...")
+                goal_suggestion = max(TARGET_DAILY, round(yesterday_sum * 1.1) if yesterday_sum > 0 else TARGET_DAILY)
+                goal = st.number_input("Today's Goal ($)", 
+                                     value=goal_suggestion, 
+                                     step=10,
+                                     min_value=0)
             
-            if st.button("Start Tracking", type="primary"):
-                st.session_state["daily_checkin"] = {
-                    "working": True, 
-                    "goal": goal, 
-                    "notes": notes,
-                    "start_time": datetime.now(tz)
-                }
-                st.session_state["last_checkin_date"] = today.isoformat()
-                update_last_checkin(username, today.isoformat())
-                st.rerun()
+            with col2:
+                notes = st.text_area("Notes / Mindset for today",
+                                   placeholder="Enter your goals, mindset, or any important notes for today...")
         
-        else:
-            if st.button("Take the day off", type="primary"):
-                st.session_state["daily_checkin"] = {"working": False, "goal": 0, "notes": "Day off"}
-                st.session_state["last_checkin_date"] = today.isoformat()
-                update_last_checkin(username, today.isoformat())
-                st.rerun()
-        
-        st.stop()
+        if st.button("Start Tracking", type="primary"):
+            checkin_time = datetime.now(tz)
+            # Save to Firestore
+            update_user_data(username, {
+                "last_checkin_date": today.isoformat(),
+                "today_goal": goal,
+                "today_notes": notes,
+                "checkin_time": checkin_time.isoformat(),
+                "is_working": True
+            })
+            
+            st.session_state["daily_checkin"] = {
+                "working": True, 
+                "goal": goal, 
+                "notes": notes,
+                "start_time": checkin_time
+            }
+            st.rerun()
     
-    return st.session_state.get("daily_checkin", {}).get("working", False)
+    else:
+        if st.button("Take the day off", type="primary"):
+            # Save to Firestore
+            update_user_data(username, {
+                "last_checkin_date": today.isoformat(),
+                "today_goal": 0,
+                "today_notes": "Day off",
+                "checkin_time": datetime.now(tz).isoformat(),
+                "is_working": False
+            })
+            
+            st.session_state["daily_checkin"] = {"working": False, "goal": 0, "notes": "Day off"}
+            st.rerun()
+    
+    st.stop()
+    return False  # This line won't be reached due to st.stop()
 
 def delivery_entry_form(username: str, today: date) -> None:
     """Display form for entering delivery information."""
@@ -692,12 +756,20 @@ def display_metrics(username: str, today: date) -> Tuple[float, float]:
     base_earned = today_df["base_amount"].sum() if "base_amount" in today_df.columns else earned
     perc = min(earned / goal * 100, 100) if goal else 0
     
-    # Calculate Earnings Per Hour
+    # Calculate Earnings Per Hour - FIXED LOGIC
     eph = None
     if "start_time" in daily_checkin and not today_df.empty:
         shift_duration = (datetime.now(tz) - daily_checkin["start_time"]).total_seconds() / 3600
-        if shift_duration > 0:
+        
+        # Ensure we don't divide by zero and have reasonable shift duration
+        if shift_duration > 0.1:  # At least 6 minutes of work
             eph = earned / shift_duration
+        else:
+            # If shift just started, use average of last 5 deliveries
+            last_5 = df_all.sort_values("timestamp", ascending=False).head(5)
+            if not last_5.empty:
+                avg_eph = last_5["order_total"].sum() / 5  # Simple average
+                eph = avg_eph if avg_eph > 0 else None
     
     # Display metrics in columns
     col1, col2, col3, col4 = st.columns(4)
@@ -713,9 +785,11 @@ def display_metrics(username: str, today: date) -> Tuple[float, float]:
                  len(today_df) if not today_df.empty else 0)
     with col3:
         if eph is not None:
+            # Cap EPH at reasonable maximum (e.g., $100/hr) to prevent unrealistic spikes
+            realistic_eph = min(eph, 100)
             st.metric("Earnings Per Hour", 
-                     f"${eph:.2f}",
-                     "good" if eph >= 25 else "normal" if eph >= 20 else "bad")
+                     f"${realistic_eph:.2f}",
+                     "good" if realistic_eph >= 25 else "normal" if realistic_eph >= 20 else "bad")
         else:
             st.metric("Earnings Per Hour", "Calculating...")
     with col4:
