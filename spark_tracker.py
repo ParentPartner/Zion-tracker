@@ -545,25 +545,39 @@ def daily_checkin(username: str) -> bool:
     today = get_current_date()
     user_data = get_user(username)
     
-    # Check Firestore for existing check-in first
+    # Check Firestore for existing check-in
     if user_data and "last_checkin_date" in user_data:
         try:
             last_ci_date = datetime.strptime(user_data["last_checkin_date"], "%Y-%m-%d").date()
             if last_ci_date == today:
-                # Already checked in today - use Firestore data
-                if "daily_checkin" not in st.session_state:
-                    st.session_state["daily_checkin"] = {
-                        "working": user_data.get("is_working", False),
-                        "goal": user_data.get("today_goal", TARGET_DAILY),
-                        "notes": user_data.get("today_notes", ""),
-                        "start_time": datetime.strptime(user_data["checkin_time"], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=tz) 
-                                       if user_data.get("checkin_time") else datetime.now(tz)
-                    }
-                return st.session_state["daily_checkin"]["working"]
+                # Already checked in today - use stored data
+                is_working = user_data.get("is_working", False)
+                checkin_time = datetime.strptime(user_data["checkin_time"], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=tz) if user_data.get("checkin_time") else datetime.now(tz)
+                
+                # Store in session state
+                st.session_state["daily_checkin"] = {
+                    "working": is_working,
+                    "goal": user_data.get("today_goal", TARGET_DAILY),
+                    "notes": user_data.get("today_notes", ""),
+                    "start_time": checkin_time
+                }
+                
+                # Show status change option if not working
+                if not is_working:
+                    if st.button("🚀 Actually, I want to work today!"):
+                        update_user_data(username, {
+                            "is_working": True,
+                            "checkin_time": datetime.now(tz).isoformat(),
+                            "today_goal": TARGET_DAILY,
+                            "today_notes": "Changed mind - decided to work"
+                        })
+                        st.rerun()
+                
+                return is_working
         except ValueError:
             pass  # Handle date parsing error
     
-    # If no check-in today, show the check-in form
+    # If we get here, we need to do the check-in
     st.header("📅 Daily Check‑In")
     
     working = st.radio("Working today?", ("Yes", "No"), index=0, horizontal=True)
@@ -588,9 +602,9 @@ def daily_checkin(username: str) -> bool:
                 
                 goal_suggestion = max(TARGET_DAILY, round(yesterday_sum * 1.1) if yesterday_sum > 0 else TARGET_DAILY)
                 goal = st.number_input("Today's Goal ($)", 
-                                     value=goal_suggestion, 
-                                     step=10,
-                                     min_value=0)
+                                      value=goal_suggestion, 
+                                      step=10,
+                                      min_value=0)
             
             with col2:
                 notes = st.text_area("Notes / Mindset for today",
@@ -598,7 +612,6 @@ def daily_checkin(username: str) -> bool:
         
         if st.button("Start Tracking", type="primary"):
             checkin_time = datetime.now(tz)
-            # Save to Firestore
             update_user_data(username, {
                 "last_checkin_date": today.isoformat(),
                 "today_goal": goal,
@@ -615,9 +628,8 @@ def daily_checkin(username: str) -> bool:
             }
             st.rerun()
     
-    else:
+    else:  # User selected "No"
         if st.button("Take the day off", type="primary"):
-            # Save to Firestore
             update_user_data(username, {
                 "last_checkin_date": today.isoformat(),
                 "today_goal": 0,
@@ -626,11 +638,16 @@ def daily_checkin(username: str) -> bool:
                 "is_working": False
             })
             
-            st.session_state["daily_checkin"] = {"working": False, "goal": 0, "notes": "Day off"}
+            st.session_state["daily_checkin"] = {
+                "working": False,
+                "goal": 0,
+                "notes": "Day off",
+                "start_time": datetime.now(tz)
+            }
             st.rerun()
     
     st.stop()
-    return False  # This line won't be reached due to st.stop()
+    return False
 
 def delivery_entry_form(username: str, today: date) -> None:
     """Display form for entering delivery information."""
