@@ -1,5 +1,5 @@
 
-# 🚦 Spark Delivery Tracker (v2.0)
+# 🚦 Spark Delivery Tracker (v3.0)
 
 A **Streamlit**-based delivery earnings tracker and analytics dashboard with AI‑enhanced OCR parsing and a tip‑baiter tracker. Save delivery records via screenshot or manual entry, track daily performance, automatically predict earnings, and visualize trends.
 
