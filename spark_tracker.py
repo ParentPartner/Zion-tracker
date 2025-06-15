@@ -24,13 +24,20 @@ PERFORMANCE_LEVELS = {
     "Poor": {"min_epm": 0, "min_eph": 0}
 }
 
+# Initialize Firebase only once
 if not firebase_admin._apps:
-    cred = credentials.Certificate(dict(st.secrets["firebase"]))
-    firebase_admin.initialize_app(cred)
+    try:
+        cred = credentials.Certificate(dict(st.secrets["firebase"]))
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Failed to initialize Firebase: {e}")
+        st.stop()
+
 db = firestore.client()
 
 def get_current_date() -> date:
     return datetime.now(tz).date()
+
 
 # === FIRESTORE HELPERS ===
 def get_user(username: str) -> Optional[Dict]:
