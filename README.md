@@ -50,34 +50,38 @@ A **Streamlit**-based delivery earnings tracker and analytics dashboard with AI�
 ## 📥 Installation
 
 1. **Clone the repo**
-   ```bash
-   git clone https://github.com/ParentPartner/Zion-tracker.git
-   cd Zion-tracker
 
-	2.	Install dependencies
+    ```bash
+    git clone https://github.com/ParentPartner/Zion-tracker.git
+    cd Zion-tracker
+    ```
 
-pip install -r requirements.txt
+2. **Install dependencies**
 
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-	3.	Set up Firebase credentials
-	•	Add your Firebase service account JSON in streamlit.secrets under "firebase".
-	•	Example ~/.streamlit/secrets.toml:
+3. **Set up Firebase credentials**
 
-[firebase]
-project_id = "your_project_id"
-private_key_id = "your_private_key_id"
-private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-client_email = "your_service_account_email"
+    - Add your Firebase service account JSON in `streamlit.secrets` under `"firebase"`.
+    - Example `~/.streamlit/secrets.toml`:
 
+    ```toml
+    [firebase]
+    project_id = "your_project_id"
+    private_key_id = "your_private_key_id"
+    private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+    client_email = "your_service_account_email"
+    ```
 
-	•	Or define the secrets as environment variable: ST_SECRETS.
+    - Or define the secrets as environment variable: `ST_SECRETS`.
 
-	4.	Launch the app
+4. **Launch the app**
 
-streamlit run spark_tracker.py
-
-
-
+    ```bash
+    streamlit run spark_tracker.py
+    ```
 ⸻
 
 ⚙️ Usage Workflow
