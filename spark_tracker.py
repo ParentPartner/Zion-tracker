@@ -736,18 +736,27 @@ def display_metrics(username: str, today: date) -> Tuple[float, float]:
     
     # Calculate Earnings Per Hour - FIXED LOGIC
     eph = None
-    if "start_time" in daily_checkin and not today_df.empty:
-        shift_duration = (datetime.now(tz) - daily_checkin["start_time"]).total_seconds() / 3600
+    if not today_df.empty:
+        # Get first and last delivery timestamps
+        first_delivery = today_df["timestamp"].min()
+        last_delivery = today_df["timestamp"].max()
         
-        # Ensure we don't divide by zero and have reasonable shift duration
-        if shift_duration > 0.1:  # At least 6 minutes of work
-            eph = earned / shift_duration
+        # Calculate active hours (with minimum 15 minutes between deliveries considered a break)
+        today_df = today_df.sort_values("timestamp")
+        time_diffs = today_df["timestamp"].diff().dt.total_seconds() / 60  # in minutes
+        
+        # Active time is sum of all time between orders (max 15 minutes gap counted)
+        active_minutes = time_diffs[time_diffs <= 15].sum()
+        active_hours = active_minutes / 60
+        
+        # Ensure we have reasonable active time (at least 15 minutes)
+        if active_hours >= 0.25:
+            eph = earned / active_hours
         else:
-            # If shift just started, use average of last 5 deliveries
-            last_5 = df_all.sort_values("timestamp", ascending=False).head(5)
-            if not last_5.empty:
-                avg_eph = last_5["order_total"].sum() / 5  # Simple average
-                eph = avg_eph if avg_eph > 0 else None
+            # If not enough active time, use simple time from first to last delivery
+            total_hours = (last_delivery - first_delivery).total_seconds() / 3600
+            if total_hours >= 0.25:  # At least 15 minutes
+                eph = earned / total_hours
     
     # Display metrics in columns
     col1, col2, col3, col4 = st.columns(4)
@@ -769,7 +778,7 @@ def display_metrics(username: str, today: date) -> Tuple[float, float]:
                      f"${realistic_eph:.2f}",
                      "good" if realistic_eph >= 25 else "normal" if realistic_eph >= 20 else "bad")
         else:
-            st.metric("Earnings Per Hour", "Calculating...")
+            st.metric("Earnings Per Hour", "N/A")
     with col4:
         if not today_df.empty and "miles" in today_df.columns and today_df["miles"].sum() > 0:
             epm = earned / today_df["miles"].sum()
