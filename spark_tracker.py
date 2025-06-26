@@ -513,7 +513,7 @@ def tip_baiter_tracker(username: str) -> None:
 # === STREAMLIT UI ===
 def login_section() -> Optional[str]:
     """Display login interface and return username if successful."""
-    st.title("🔐 Spark Tracker Login")
+    st.title("🔐 Zion Delivery Tracker")
     
     col1, col2 = st.columns(2)
     with col1:
